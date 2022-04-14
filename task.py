@@ -115,7 +115,7 @@ class MyGlobalPointerNERTask(Task):
                 train_iterator.set_postfix_str(
                     f"training loss: {(self.logs['epoch_loss'] / self.logs['epoch_step']):.4f}")
 
-            self._on_epoch_end(epoch,verbose=False, **kwargs)
+            self._on_epoch_end(epoch, verbose=False, **kwargs)
 
             if save_each_model:
                 torch.save(self.module.state_dict(),
@@ -126,8 +126,9 @@ class MyGlobalPointerNERTask(Task):
                 content = "|{:^15}|{:^15}|{:^15}|{:^15}|{:^15}|{:^15}|\n".format(
                     epoch,
                     round(self.evaluate_logs['eval_loss'] /
-                     self.evaluate_logs['eval_step'], 5),
-                    round(self.evaluate_logs['precision'], 5), round(self.evaluate_logs['recall'], 5),
+                          self.evaluate_logs['eval_step'], 5),
+                    round(self.evaluate_logs['precision'], 5), round(
+                        self.evaluate_logs['recall'], 5),
                     round(self.evaluate_logs['f1'], 5), 'True' if self.evaluate_logs['f1'] > best_f1 else '')
                 logs.write(content)
                 if self.evaluate_logs['f1'] > best_f1:
@@ -135,7 +136,11 @@ class MyGlobalPointerNERTask(Task):
                     torch.save(self.module.state_dict(),
                                os.path.join(ckpt, f'best_model.pth'))
                 else:
-                    break   
+                    break
+
+        if not save_each_model:
+            torch.save(self.module.state_dict(),
+                       os.path.join(ckpt, f'last_model.pth'))
 
         self._on_train_end(**kwargs)
 

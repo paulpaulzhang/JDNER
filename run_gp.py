@@ -208,8 +208,13 @@ def predict_cv(args):
     data_df['label'] = data_df['label'].apply(lambda x: str(x))
 
     kfold = KFold(n_splits=args.fold, shuffle=True, random_state=args.seed)
+
     args.checkpoint = os.path.join(args.checkpoint, args.model_type)
     model_type = args.model_type
+
+    args.save_path = os.path.join(args.save_path, model_type)
+    os.makedirs(args.save_path, exist_ok=True)
+
     for fold, (train_idx, _) in enumerate(kfold.split(data_df)):
         print(f'========== {fold + 1} ==========')
         args.model_type = f'{model_type}-{fold + 1}'
@@ -251,8 +256,6 @@ def predict_cv(args):
 
                 predict_results.append([_line, label])
 
-        args.save_path = os.path.join(args.save_path, model_type)
-        os.makedirs(args.save_path, exist_ok=True)
         with open(os.path.join(args.save_path, f'{model_type}-{fold + 1}.txt'), 'w', encoding='utf-8') as f:
             for _result in predict_results:
                 for word, tag in zip(_result[0], _result[1]):
@@ -261,37 +264,45 @@ def predict_cv(args):
                     f.write(f'{word} {tag}\n')
                 f.write('\n')
 
-
 def merge_cv_result(args):
-    args.save_path = os.path.join(args.save_path, args.model_type)
+    save_path = os.path.join(args.save_path, args.model_type)
     all_labels = []
     chars = []
 
     path = os.path.join(
-        args.save_path, f'{args.model_type}-1.txt')
+        save_path, f'{args.model_type}-1.txt')
     with open(path, 'r', encoding='utf-8') as f:
         lines = f.readlines()
         for line in lines:
-            chars.append(line[0])
+            if line != '\n':
+                chars.append(line[0])
+            else:
+                chars.append('\n')
 
     for fold in range(1, args.fold+1):
         labels = []
         path = os.path.join(
-            args.save_path, f'{args.model_type}-{fold + 1}.txt')
+            save_path, f'{args.model_type}-{fold}.txt')
         with open(path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
             for line in lines:
-                labels.append(line[2:])
+                if line != '\n':
+                    labels.append(line[2:].strip('\n'))
+                else:
+                    labels.append(line)
         all_labels.append(labels)
 
     merged_label = []
     for row in zip(*all_labels):
         label = Counter(row).most_common(n=1)
-        merged_label.append(label[0])
+        merged_label.append(label[0][0])
 
-    with open(os.path.join(args.save_path, args.save_name)) as f:
+    with open(os.path.join(args.save_path, args.save_name), 'w', encoding='utf-8') as f:
         for char, label in zip(chars, merged_label):
-            f.write(f'{char} {label}')
+            if char != '\n':
+                f.write(f'{char} {label}\n')
+            else:
+                f.write('\n')
 
 
 if __name__ == '__main__':
@@ -314,6 +325,7 @@ if __name__ == '__main__':
     parser.add_argument('--do_eval', type=bool, default=False)
     parser.add_argument('--do_train_cv', type=bool, default=False)
     parser.add_argument('--do_predict_cv', type=bool, default=False)
+    parser.add_argument('--do_merge', type=bool, default=False)
     parser.add_argument('--predict_model', type=str)
 
     parser.add_argument('--max_seq_len', type=int, default=128)
@@ -352,5 +364,7 @@ if __name__ == '__main__':
         train_cv(args)
     elif args.do_predict_cv:
         predict_cv(args)
+    elif args.do_merge:
+        merge_cv_result(args)
     else:
         train(args)

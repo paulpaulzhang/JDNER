@@ -47,7 +47,8 @@ class GlobalPointerModel(nn.Module):
         )
 
         sequence_output = outputs[0]
-        
+
+        # 待测试效果
         output, (h_n, c_n) = self.bilstm(sequence_output)
 
         # all_hidden_state = outputs[2]
