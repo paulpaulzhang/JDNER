@@ -297,7 +297,7 @@ def merge_cv_result(args):
         label = Counter(row).most_common(n=1)
         merged_label.append(label[0][0])
 
-    with open(os.path.join(args.save_path, args.save_name), 'w', encoding='utf-8') as f:
+    with open(os.path.join(args.extend_save_path, args.save_name), 'w', encoding='utf-8') as f:
         for char, label in zip(chars, merged_label):
             if char != '\n':
                 f.write(f'{char} {label}\n')
@@ -332,7 +332,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--learning_rate', type=float, default=2e-5)
     parser.add_argument('--num_epochs', type=int, default=10)
-    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--batch_size', type=int, default=16)
 
     parser.add_argument('--use_fgm', type=bool, default=False)
     parser.add_argument('--use_pgd', type=bool, default=True)
@@ -345,6 +345,7 @@ if __name__ == '__main__':
     parser.add_argument('--emb_name', type=str, default='word_embeddings.')
 
     parser.add_argument('--fold', type=int, default=10)
+    parser.add_argument('--extend_save_path', type=str, default='./extend_data/')
     parser.add_argument('--save_name', type=str, default='merged_res.txt')
 
     parser.add_argument('--cuda_device', type=int, default=0)

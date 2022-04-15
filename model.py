@@ -18,19 +18,19 @@ class GlobalPointerModel(nn.Module):
 
         self.encoder = encoder
 
-        self.bilstm = nn.LSTM(input_size=config.hidden_size,
-                              hidden_size=config.hidden_size,
-                              bidirectional=True,
-                              dropout=0.1,
-                              batch_first=True)
+        # self.bilstm = nn.LSTM(input_size=config.hidden_size,
+        #                       hidden_size=config.hidden_size,
+        #                       bidirectional=True,
+        #                       dropout=0.1,
+        #                       batch_first=True)
 
         for param in self.encoder.parameters():
             param.requires_grad = encoder_trained
 
         self.global_pointer = GlobalPointer(
             self.num_labels,
-            head_size * 2,
-            config.hidden_size * 2
+            head_size,
+            config.hidden_size
         )
 
     def forward(
@@ -48,14 +48,13 @@ class GlobalPointerModel(nn.Module):
 
         sequence_output = outputs[0]
 
-        # 待测试效果
-        output, (h_n, c_n) = self.bilstm(sequence_output)
+        # output, (h_n, c_n) = self.bilstm(sequence_output)
 
         # all_hidden_state = outputs[2]
         # sequence_output = all_hidden_state[-1] * 0.4 + \
         #     all_hidden_state[-2] * 0.3 + all_hidden_state[-3] * 0.3
 
-        logits = self.global_pointer(output, mask=attention_mask)
+        logits = self.global_pointer(sequence_output, mask=attention_mask)
 
         return logits
 
