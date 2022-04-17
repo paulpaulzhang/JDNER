@@ -120,6 +120,9 @@ class MyGlobalPointerNERTask(Task):
             if save_each_model:
                 torch.save(self.module.state_dict(),
                            os.path.join(ckpt, f'epoch{epoch}.pth'))
+            else:
+                torch.save(self.module.state_dict(),
+                           os.path.join(ckpt, f'last_model.pth'))
 
             if validation_data is not None:
                 self.evaluate(validation_data, ** kwargs)

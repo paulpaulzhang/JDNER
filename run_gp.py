@@ -1,4 +1,5 @@
 from collections import Counter
+import gc
 import math
 from ark_nlp.model.ner.global_pointer_bert import get_default_model_optimizer
 from ark_nlp.model.ner.global_pointer_bert import Dataset
@@ -162,8 +163,6 @@ def train_cv(args):
     for fold, (train_idx, dev_idx) in enumerate(kfold.split(data_df)):
         print(f'========== {fold + 1} ==========')
 
-        torch.cuda.empty_cache()
-
         args.model_type = f'{model_type}-{fold + 1}'
 
         train_data_df, dev_data_df = data_df.iloc[train_idx], data_df.iloc[dev_idx]
@@ -201,6 +200,11 @@ def train_cv(args):
                   epochs=args.num_epochs,
                   batch_size=args.batch_size,
                   save_each_model=False)
+
+        del model, tokenizer, dl_module, encoder
+        gc.collect()
+        torch.cuda.empty_cache()
+
 
 def predict_cv(args):
     datalist, label_set = read_data(args.data_path)
@@ -264,6 +268,7 @@ def predict_cv(args):
                     f.write(f'{word} {tag}\n')
                 f.write('\n')
 
+
 def merge_cv_result(args):
     save_path = os.path.join(args.save_path, args.model_type)
     all_labels = []
@@ -321,11 +326,11 @@ if __name__ == '__main__':
                         default='../data/preliminary_test_a/sample_per_line_preliminary_A.txt')
     parser.add_argument('--save_path', type=str, default='./submit')
 
-    parser.add_argument('--do_predict', type=bool, default=False)
-    parser.add_argument('--do_eval', type=bool, default=False)
-    parser.add_argument('--do_train_cv', type=bool, default=False)
-    parser.add_argument('--do_predict_cv', type=bool, default=False)
-    parser.add_argument('--do_merge', type=bool, default=False)
+    parser.add_argument('--do_predict', action='store_true', default=False)
+    parser.add_argument('--do_eval', action='store_true', default=False)
+    parser.add_argument('--do_train_cv', action='store_true', default=False)
+    parser.add_argument('--do_predict_cv', action='store_true', default=False)
+    parser.add_argument('--do_merge', action='store_true', default=False)
     parser.add_argument('--predict_model', type=str)
 
     parser.add_argument('--max_seq_len', type=int, default=128)
@@ -334,8 +339,8 @@ if __name__ == '__main__':
     parser.add_argument('--num_epochs', type=int, default=10)
     parser.add_argument('--batch_size', type=int, default=16)
 
-    parser.add_argument('--use_fgm', type=bool, default=False)
-    parser.add_argument('--use_pgd', type=bool, default=True)
+    parser.add_argument('--use_fgm', action='store_true', default=False)
+    parser.add_argument('--use_pgd', action='store_true', default=True)
 
     parser.add_argument('--ema_decay', type=float, default=0.999)
     parser.add_argument('--warmup_ratio', type=float, default=0.01)
@@ -345,7 +350,8 @@ if __name__ == '__main__':
     parser.add_argument('--emb_name', type=str, default='word_embeddings.')
 
     parser.add_argument('--fold', type=int, default=10)
-    parser.add_argument('--extend_save_path', type=str, default='./extend_data/')
+    parser.add_argument('--extend_save_path', type=str,
+                        default='./extend_data/')
     parser.add_argument('--save_name', type=str, default='merged_res.txt')
 
     parser.add_argument('--cuda_device', type=int, default=0)
@@ -356,6 +362,8 @@ if __name__ == '__main__':
     warnings.filterwarnings("ignore")
 
     seed_everything(args.seed)
+
+    print(args)
 
     if args.do_predict:
         predict(args)
