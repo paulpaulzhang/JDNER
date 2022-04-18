@@ -201,7 +201,7 @@ def train_cv(args):
                   batch_size=args.batch_size,
                   save_each_model=False)
 
-        del model, tokenizer, dl_module, encoder
+        del model, tokenizer, dl_module, encoder, optimizer, scheduler
         gc.collect()
         torch.cuda.empty_cache()
 
