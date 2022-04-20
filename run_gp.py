@@ -1,7 +1,7 @@
+from ast import arg
 from collections import Counter
 import gc
 import math
-from ark_nlp.model.ner.global_pointer_bert import get_default_model_optimizer
 from ark_nlp.model.ner.global_pointer_bert import Dataset
 from ark_nlp.model.ner.global_pointer_bert import Predictor
 from ark_nlp.model.ner.global_pointer_bert import Tokenizer
@@ -9,7 +9,7 @@ from nezha.configuration_nezha import NeZhaConfig
 from model import GlobalPointerModel
 from nezha.modeling_nezha import NeZhaModel
 from tokenizer import BertTokenizer
-from utils import WarmupLinearSchedule, seed_everything
+from utils import WarmupLinearSchedule, seed_everything, get_default_bert_optimizer
 from sklearn.model_selection import train_test_split, KFold
 from task import MyGlobalPointerNERTask
 from data import read_data
@@ -19,6 +19,8 @@ import pandas as pd
 import torch
 import os
 import warnings
+
+from predictor import GlobalPointerNERPredictor
 
 
 def train(args):
@@ -43,11 +45,15 @@ def train(args):
     ner_train_dataset.convert_to_ids(tokenizer)
     ner_dev_dataset.convert_to_ids(tokenizer)
 
-    train_steps = args.num_epochs * \
-        int(math.ceil(len(ner_train_dataset) / args.batch_size))
-    optimizer = get_default_model_optimizer(dl_module)
-    scheduler = WarmupLinearSchedule(
-        optimizer, warmup_steps=train_steps * args.warmup_ratio, t_total=train_steps)
+    optimizer = get_default_bert_optimizer(dl_module, args)
+
+    if args.warmup_ratio:
+        train_steps = args.num_epochs * \
+            int(math.ceil(len(ner_train_dataset) / args.batch_size))
+        scheduler = WarmupLinearSchedule(
+            optimizer, warmup_steps=train_steps * args.warmup_ratio, t_total=train_steps)
+    else:
+        scheduler = None
 
     torch.cuda.empty_cache()
 
@@ -60,7 +66,6 @@ def train(args):
     model.fit(args,
               ner_train_dataset,
               ner_dev_dataset,
-              lr=args.learning_rate,
               epochs=args.num_epochs,
               batch_size=args.batch_size,
               save_each_model=False)
@@ -88,7 +93,7 @@ def evaluate(args):
     ner_train_dataset.convert_to_ids(tokenizer)
     ner_dev_dataset.convert_to_ids(tokenizer)
 
-    optimizer = get_default_model_optimizer(dl_module)
+    optimizer = get_default_bert_optimizer(dl_module, args)
 
     torch.cuda.empty_cache()
 
@@ -119,7 +124,7 @@ def predict(args):
     model.load_state_dict(torch.load(args.predict_model))
     model.to(torch.device(f'cuda:{args.cuda_device}'))
 
-    ner_predictor_instance = Predictor(
+    ner_predictor_instance = GlobalPointerNERPredictor(
         model, tokenizer, ner_train_dataset.cat2id)
 
     predict_results = []
@@ -181,11 +186,15 @@ def train_cv(args):
         ner_train_dataset.convert_to_ids(tokenizer)
         ner_dev_dataset.convert_to_ids(tokenizer)
 
-        train_steps = args.num_epochs * \
-            int(math.ceil(len(ner_train_dataset) / args.batch_size))
-        optimizer = get_default_model_optimizer(dl_module)
-        scheduler = WarmupLinearSchedule(
-            optimizer, warmup_steps=train_steps * args.warmup_ratio, t_total=train_steps)
+        optimizer = get_default_bert_optimizer(dl_module, args)
+
+        if args.warmup_ratio:
+            train_steps = args.num_epochs * \
+                int(math.ceil(len(ner_train_dataset) / args.batch_size))
+            scheduler = WarmupLinearSchedule(
+                optimizer, warmup_steps=train_steps * args.warmup_ratio, t_total=train_steps)
+        else:
+            scheduler = None
 
         model = MyGlobalPointerNERTask(
             dl_module, optimizer, 'gpce',
@@ -196,7 +205,6 @@ def train_cv(args):
         model.fit(args,
                   ner_train_dataset,
                   ner_dev_dataset,
-                  lr=args.learning_rate,
                   epochs=args.num_epochs,
                   batch_size=args.batch_size,
                   save_each_model=False)
@@ -237,7 +245,7 @@ def predict_cv(args):
         model.load_state_dict(torch.load(args.predict_model))
         model.to(torch.device(f'cuda:{args.cuda_device}'))
 
-        ner_predictor_instance = Predictor(
+        ner_predictor_instance = GlobalPointerNERPredictor(
             model, tokenizer, ner_train_dataset.cat2id)
 
         predict_results = []
@@ -335,12 +343,13 @@ if __name__ == '__main__':
 
     parser.add_argument('--max_seq_len', type=int, default=128)
 
-    parser.add_argument('--learning_rate', type=float, default=2e-5)
+    parser.add_argument('--lr', type=float, default=2e-5)
+    parser.add_argument('--gp_lr', type=float, default=2e-3)
     parser.add_argument('--num_epochs', type=int, default=10)
     parser.add_argument('--batch_size', type=int, default=16)
 
-    parser.add_argument('--use_fgm', action='store_true', default=False)
-    parser.add_argument('--use_pgd', action='store_true', default=True)
+    parser.add_argument('--use_fgm', action='store_true', default=True)
+    parser.add_argument('--use_pgd', action='store_true', default=False)
 
     parser.add_argument('--ema_decay', type=float, default=0.999)
     parser.add_argument('--warmup_ratio', type=float, default=0.01)

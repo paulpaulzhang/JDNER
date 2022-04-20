@@ -1,11 +1,20 @@
+from ast import arg
 import os
+import warnings
 from ark_nlp.model.ner.global_pointer_bert import Task
+from ark_nlp.factory.utils.attack import FGM, PGD
+from torch.utils.data import DataLoader
+from ark_nlp.factory.optimizer import get_optimizer
 import torch
-from utils import FGM, PGD, get_evaluate_fpr, Logs
+from utils import get_evaluate_fpr, Logs
 from tqdm import tqdm
 
 
 class MyGlobalPointerNERTask(Task):
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.best_f1 = 0
 
     def fit(
         self,
@@ -43,6 +52,7 @@ class MyGlobalPointerNERTask(Task):
             lr,
             params,
             shuffle=True,
+            args=args,
             **kwargs
         )
 
@@ -54,7 +64,6 @@ class MyGlobalPointerNERTask(Task):
         logs.write(
             f"|{'epoch':^15}|{'loss':^15}|{'precision':^15}|{'recall':^15}|{'f1':^15}|{'best model':^15}|\n")
 
-        best_f1 = 0
         for epoch in range(1, epochs+1):
 
             self._on_epoch_begin(**kwargs)
@@ -74,35 +83,7 @@ class MyGlobalPointerNERTask(Task):
 
                 # loss backword
                 loss = self._on_backward(
-                    inputs, outputs, logits, loss, **kwargs)
-
-                if args.use_fgm:
-                    self.module.zero_grad()
-                    fgm = FGM(args, self.module)
-                    fgm.attack()
-                    outputs = self.module(**inputs)
-                    adv_logits, adv_loss = self._get_train_loss(
-                        inputs, outputs, **kwargs)
-                    adv_loss = self._on_backward(
-                        inputs, outputs, adv_logits, adv_loss, **kwargs)
-                    fgm.restore()
-
-                if args.use_pgd:
-                    self.module.zero_grad()
-                    pgd = PGD(args, self.module)
-                    pgd.backup_grad()
-                    for t in range(args.adv_k):
-                        pgd.attack(is_first_attack=(t == 0))
-                        if t != args.adv_k - 1:
-                            self.module.zero_grad()
-                        else:
-                            pgd.restore_grad()
-                        outputs = self.module(**inputs)
-                        adv_logits, adv_loss = self._get_train_loss(
-                            inputs, outputs, **kwargs)
-                        adv_loss = self._on_backward(
-                            inputs, outputs, adv_logits, adv_loss, **kwargs)
-                    pgd.restore()
+                    inputs, outputs, logits, loss, args=args, **kwargs)
 
                 if (step + 1) % gradient_accumulation_steps == 0:
 
@@ -115,7 +96,12 @@ class MyGlobalPointerNERTask(Task):
                 train_iterator.set_postfix_str(
                     f"training loss: {(self.logs['epoch_loss'] / self.logs['epoch_step']):.4f}")
 
-            self._on_epoch_end(epoch,verbose=False, **kwargs)
+            self._on_epoch_end(epoch, verbose=False, **kwargs)
+
+
+            if self.ema_decay:
+                self.ema.store(self.module.parameters())
+                self.ema.copy_to(self.module.parameters())
 
             if save_each_model:
                 torch.save(self.module.state_dict(),
@@ -124,23 +110,117 @@ class MyGlobalPointerNERTask(Task):
                 torch.save(self.module.state_dict(),
                            os.path.join(ckpt, f'last_model.pth'))
 
+            if self.ema_decay:
+                self.ema.restore(self.module.parameters())
+
             if validation_data is not None:
-                self.evaluate(validation_data, ** kwargs)
+                self.evaluate(validation_data, ckpt=ckpt, ** kwargs)
+
                 content = "|{:^15}|{:^15}|{:^15}|{:^15}|{:^15}|{:^15}|\n".format(
                     epoch,
                     round(self.evaluate_logs['eval_loss'] /
-                     self.evaluate_logs['eval_step'], 5),
-                    round(self.evaluate_logs['precision'], 5), round(self.evaluate_logs['recall'], 5),
-                    round(self.evaluate_logs['f1'], 5), 'True' if self.evaluate_logs['f1'] > best_f1 else '')
+                          self.evaluate_logs['eval_step'], 5),
+                    round(self.evaluate_logs['precision'], 5), round(
+                        self.evaluate_logs['recall'], 5),
+                    round(self.evaluate_logs['f1'], 5), 'True' if self.evaluate_logs['f1'] > \
+                        self.best_f1 else '')
                 logs.write(content)
-                if self.evaluate_logs['f1'] > best_f1:
-                    best_f1 = self.evaluate_logs['f1']
-                    torch.save(self.module.state_dict(),
-                               os.path.join(ckpt, f'best_model.pth'))
-                else:
-                    break   
+
+                if self.evaluate_logs['f1'] < self.best_f1:
+                    break
 
         self._on_train_end(**kwargs)
+
+    def _on_train_begin(
+        self,
+        train_data,
+        validation_data,
+        batch_size,
+        lr,
+        params,
+        shuffle,
+        num_workers=0,
+        train_to_device_cols=None,
+        args=None,
+        **kwargs
+    ):
+        if hasattr(train_data, 'id2cat'):
+            self.id2cat = train_data.id2cat
+            self.cat2id = {v_: k_ for k_, v_ in train_data.id2cat.items()}
+
+        # 在初始化时会有class_num参数，若在初始化时不指定，则在训练阶段从训练集获取信息
+        if self.class_num is None:
+            if hasattr(train_data, 'class_num'):
+                self.class_num = train_data.class_num
+            else:
+                warnings.warn("The class_num is None.")
+
+        if train_to_device_cols is None:
+            self.train_to_device_cols = train_data.to_device_cols
+        else:
+            self.train_to_device_cols = train_to_device_cols
+
+        train_generator = DataLoader(
+            train_data,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=num_workers,
+            collate_fn=self._train_collate_fn
+        )
+        self.train_generator_lenth = len(train_generator)
+
+        self.optimizer = get_optimizer(self.optimizer, self.module, lr, params)
+        self.optimizer.zero_grad()
+
+        self.module.train()
+
+        if args.use_fgm:
+            self.fgm = FGM(self.module)
+        if args.use_pgd:
+            self.pgd = PGD(self.module)
+
+        self._on_train_begin_record(**kwargs)
+
+        return train_generator
+
+    def _on_backward(
+        self,
+        inputs,
+        outputs,
+        logits,
+        loss,
+        gradient_accumulation_steps=1,
+        args=None,
+        **kwargs
+    ):
+
+        # 如果GPU数量大于1
+        if self.n_gpu > 1:
+            loss = loss.mean()
+        # 如果使用了梯度累积，除以累积的轮数
+        if gradient_accumulation_steps > 1:
+            loss = loss / gradient_accumulation_steps
+
+        loss.backward()
+
+        if args.use_fgm:
+            self.fgm.attack(epsilon=args.epsilon, emb_name=args.emb_name)
+            logits = self.module(**inputs)
+            _, attck_loss = self._get_train_loss(inputs, logits, **kwargs)
+            attck_loss.backward()
+            self.fgm.restore()
+
+        if args.use_pgd:
+            self.pgd.attack(epsilon=args.epsilon,
+                            alpha=args.alpha, emb_name=args.emb_name)
+            logits = self.module(**inputs)
+            _, attck_loss = self._get_train_loss(inputs, logits, **kwargs)
+            attck_loss.backward()
+            self.pgd.restore()
+
+        self._on_backward_record(loss, **kwargs)
+
+        return loss
 
     def _on_evaluate_begin_record(self, **kwargs):
 
@@ -204,3 +284,15 @@ class MyGlobalPointerNERTask(Task):
                 self.evaluate_logs['eval_loss'] /
                 self.evaluate_logs['eval_step'],
                 precision, recall, f1))
+
+    def _on_evaluate_end(self, ckpt=None, **kwargs):
+
+        self._on_evaluate_end_record()
+
+        if self.evaluate_logs['f1'] > self.best_f1 and ckpt:
+            self.best_f1 = self.evaluate_logs['f1']
+            torch.save(self.module.state_dict(),
+                       os.path.join(ckpt, f'best_model.pth'))
+
+        if self.ema_decay:
+            self.ema.restore(self.module.parameters())

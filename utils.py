@@ -10,6 +10,7 @@ from torch.cuda.amp import autocast
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LambdaLR
 import torch.nn.functional as F
+from transformers import AdamW
 
 
 class WarmupLinearSchedule(LambdaLR):
@@ -160,102 +161,6 @@ class PGD:
                 param.grad = self.grad_backup[name]
 
 
-class FreeLB():
-    def __init__(self, args, model, optimizer, inputs, scaler=None):
-        self.model = model
-        self.optimizer = optimizer
-        self.args = args
-        self.inputs = inputs
-        self.scaler = scaler
-
-    def attack(self):
-        # ============================ Code for adversarial training=============
-        # initialize delta
-        if isinstance(self.model.module, torch.nn.DataParallel):
-            embeds_init = self.model.module.module.encoder.embeddings.word_embeddings(
-                self.inputs['input_ids'])
-        else:
-            embeds_init = self.model.module.encoder.embeddings.word_embeddings(
-                self.inputs['input_ids'])
-
-        if self.args.adv_init_mag > 0:
-
-            input_mask = self.inputs['attention_mask'].to(embeds_init)
-            input_lengths = torch.sum(input_mask, 1)
-            # check the shape of the mask here..
-
-            if self.args.norm_type == "l2":
-                delta = torch.zeros_like(
-                    embeds_init).uniform_(-1, 1) * input_mask.unsqueeze(2)
-                dims = input_lengths * embeds_init.size(-1)
-                mag = self.args.adv_init_mag / torch.sqrt(dims)
-                delta = (delta * mag.view(-1, 1, 1)).detach()
-            elif self.args.norm_type == "linf":
-                delta = torch.zeros_like(embeds_init).uniform_(-self.args.adv_init_mag,
-                                                               self.args.adv_init_mag) * input_mask.unsqueeze(2)
-
-        else:
-            delta = torch.zeros_like(embeds_init)
-
-        # the main loop
-        for astep in range(self.args.adv_steps):
-            # (0) forward
-            delta.requires_grad_()
-            self.inputs['inputs_embeds'] = delta + embeds_init
-
-            # forward
-            outputs = self.model.module(**self.inputs)
-
-            # 计算损失
-            _, adv_loss = self.model._get_train_loss(self.inputs, outputs)
-
-            adv_loss = adv_loss / self.args.adv_steps
-
-            adv_loss.backward()
-
-            if astep == self.args.adv_steps - 1:
-                # further updates on delta
-                break
-
-            # (2) get gradient on delta
-            delta_grad = delta.grad.clone().detach()
-
-            # (3) update and clip
-            if self.args.norm_type == "l2":
-                denorm = torch.norm(delta_grad.view(
-                    delta_grad.size(0), -1), dim=1).view(-1, 1, 1)
-                denorm = torch.clamp(denorm, min=1e-8)
-                delta = (delta + self.args.adv_lr *
-                         delta_grad / denorm).detach()
-                if self.args.adv_max_norm > 0:
-                    delta_norm = torch.norm(delta.view(
-                        delta.size(0), -1).float(), p=2, dim=1).detach()
-                    exceed_mask = (delta_norm > self.args.adv_max_norm).to(
-                        embeds_init)
-                    reweights = (self.args.adv_max_norm / delta_norm * exceed_mask
-                                 + (1 - exceed_mask)).view(-1, 1, 1)
-                    delta = (delta * reweights).detach()
-            elif self.args.norm_type == "linf":
-                denorm = torch.norm(delta_grad.view(delta_grad.size(
-                    0), -1), dim=1, p=float("inf")).view(-1, 1, 1)
-                denorm = torch.clamp(denorm, min=1e-8)
-                delta = (delta + self.args.adv_lr *
-                         delta_grad / denorm).detach()
-                if self.args.adv_max_norm > 0:
-                    delta = torch.clamp(
-                        delta, -self.args.adv_max_norm, self.args.adv_max_norm).detach()
-            else:
-                print("Norm type {} not specified.".format(self.args.norm_type))
-                exit()
-
-            if isinstance(self.model.module, torch.nn.DataParallel):
-                embeds_init = self.model.module.module.encoder.embeddings.word_embeddings(
-                    self.batch_cuda['input_ids'])
-            else:
-                embeds_init = self.model.module.encoder.embeddings.word_embeddings(
-                    self.batch_cuda['input_ids'])
-
-
 def seed_everything(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
@@ -303,6 +208,46 @@ def compute_kl_loss(p, q, pad_mask=None):
 
     loss = (p_loss + q_loss) / 2
     return loss
+
+
+def get_default_bert_optimizer(
+    module,
+    args,
+    eps: float = 1e-6,
+    correct_bias: bool = True,
+    weight_decay: float = 1e-3,
+):
+    model_param = list(module.named_parameters())
+    no_decay = ["bias", "LayerNorm.weight"]
+
+    bert_param_optimizer = []
+    gp_param_optimizer = []
+
+    for name, param in model_param:
+        space = name.split('.')
+        if space[0] == 'encoder':
+            bert_param_optimizer.append((name, param))
+        elif space[0] == 'global_pointer':
+            gp_param_optimizer.append((name, param))
+
+    optimizer_grouped_parameters = [
+        {"params": [p for n, p in bert_param_optimizer if not any(nd in n for nd in no_decay)],
+            "weight_decay": weight_decay, 'lr': args.lr},
+        {"params": [p for n, p in bert_param_optimizer if any(nd in n for nd in no_decay)],
+            "weight_decay": 0.0, 'lr': args.lr},
+
+        {"params": [p for n, p in gp_param_optimizer if not any(nd in n for nd in no_decay)],
+            "weight_decay": weight_decay, 'lr': args.gp_lr},
+        {"params": [p for n, p in gp_param_optimizer if any(nd in n for nd in no_decay)],
+            "weight_decay": 0.0, 'lr': args.gp_lr},
+    ]
+
+    optimizer = AdamW(optimizer_grouped_parameters,
+                      lr=args.lr,
+                      eps=eps,
+                      correct_bias=correct_bias,
+                      weight_decay=weight_decay)
+    return optimizer
 
 
 class Logs:

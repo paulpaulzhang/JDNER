@@ -3,6 +3,9 @@ checkpoint/
 submit/
 extend_data/
 
+# file
+test.ipynb
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
