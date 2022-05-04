@@ -1,4 +1,3 @@
-from ast import arg
 from collections import Counter
 import gc
 import math
@@ -16,6 +15,7 @@ from data import read_data
 from tqdm import tqdm
 from argparse import ArgumentParser
 import pandas as pd
+from pathlib import Path
 import torch
 import os
 import warnings
@@ -121,7 +121,7 @@ def predict(args):
                                          num_labels=len(ner_train_dataset.cat2id))
     encoder = NeZhaModel(config)
     model = GlobalPointerModel(config, encoder)
-    model.load_state_dict(torch.load(args.predict_model))
+    model.load_state_dict(torch.load(args.predict_model), strict=False)
     model.to(torch.device(f'cuda:{args.cuda_device}'))
 
     ner_predictor_instance = GlobalPointerNERPredictor(
@@ -214,7 +214,7 @@ def train_cv(args):
         torch.cuda.empty_cache()
 
 
-def predict_cv(args):
+def predict_vote(args):
     datalist, label_set = read_data(args.data_path)
     data_df = pd.DataFrame(datalist)
     data_df['label'] = data_df['label'].apply(lambda x: str(x))
@@ -242,7 +242,7 @@ def predict_cv(args):
                                              num_labels=len(ner_train_dataset.cat2id))
         encoder = NeZhaModel(config)
         model = GlobalPointerModel(config, encoder)
-        model.load_state_dict(torch.load(args.predict_model))
+        model.load_state_dict(torch.load(args.predict_model), strict=False)
         model.to(torch.device(f'cuda:{args.cuda_device}'))
 
         ner_predictor_instance = GlobalPointerNERPredictor(
@@ -277,14 +277,12 @@ def predict_cv(args):
                 f.write('\n')
 
 
-def merge_cv_result(args):
-    save_path = os.path.join(args.save_path, args.model_type)
+def vote(args):
+    path = [str(p) for p in list(Path(args.vote_path).glob('**/*.txt'))]
     all_labels = []
     chars = []
 
-    path = os.path.join(
-        save_path, f'{args.model_type}-1.txt')
-    with open(path, 'r', encoding='utf-8') as f:
+    with open(path[0], 'r', encoding='utf-8') as f:
         lines = f.readlines()
         for line in lines:
             if line != '\n':
@@ -292,11 +290,9 @@ def merge_cv_result(args):
             else:
                 chars.append('\n')
 
-    for fold in range(1, args.fold+1):
+    for p in path:
         labels = []
-        path = os.path.join(
-            save_path, f'{args.model_type}-{fold}.txt')
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(p, 'r', encoding='utf-8') as f:
             lines = f.readlines()
             for line in lines:
                 if line != '\n':
@@ -331,14 +327,20 @@ if __name__ == '__main__':
     parser.add_argument('--data_path', type=str,
                         default='../data/train_data/train.txt')
     parser.add_argument('--test_file', type=str,
-                        default='../data/preliminary_test_a/sample_per_line_preliminary_A.txt')
+                        default='../data/preliminary_test_b/sample_per_line_preliminary_B.txt')
     parser.add_argument('--save_path', type=str, default='./submit')
+    parser.add_argument('--vote_path', type=str, default='./submit')
+    parser.add_argument('--extend_save_path', type=str,
+                        default='./extend_data/')
+    parser.add_argument('--save_name', type=str, default='merged_res.txt')
 
+    parser.add_argument('--do_train', action='store_true', default=False)
     parser.add_argument('--do_predict', action='store_true', default=False)
     parser.add_argument('--do_eval', action='store_true', default=False)
     parser.add_argument('--do_train_cv', action='store_true', default=False)
-    parser.add_argument('--do_predict_cv', action='store_true', default=False)
-    parser.add_argument('--do_merge', action='store_true', default=False)
+    parser.add_argument('--do_predict_vote',
+                        action='store_true', default=False)
+    parser.add_argument('--do_vote', action='store_true', default=False)
     parser.add_argument('--predict_model', type=str)
 
     parser.add_argument('--max_seq_len', type=int, default=128)
@@ -347,6 +349,7 @@ if __name__ == '__main__':
     parser.add_argument('--gp_lr', type=float, default=2e-3)
     parser.add_argument('--num_epochs', type=int, default=10)
     parser.add_argument('--batch_size', type=int, default=16)
+    parser.add_argument('--fold', type=int, default=10)
 
     parser.add_argument('--use_fgm', action='store_true', default=True)
     parser.add_argument('--use_pgd', action='store_true', default=False)
@@ -357,11 +360,6 @@ if __name__ == '__main__':
     parser.add_argument('--alpha', type=float, default=0.3)
     parser.add_argument('--epsilon', type=float, default=0.3)
     parser.add_argument('--emb_name', type=str, default='word_embeddings.')
-
-    parser.add_argument('--fold', type=int, default=10)
-    parser.add_argument('--extend_save_path', type=str,
-                        default='./extend_data/')
-    parser.add_argument('--save_name', type=str, default='merged_res.txt')
 
     parser.add_argument('--cuda_device', type=int, default=0)
     parser.add_argument('--seed', type=int, default=42)
@@ -374,15 +372,19 @@ if __name__ == '__main__':
 
     print(args)
 
+    if args.do_train_cv:
+        train_cv(args)
+    if args.do_train:
+        train(args)
+
     if args.do_predict:
         predict(args)
-    elif args.do_eval:
+
+    if args.do_predict_vote:
+        predict_vote(args)
+
+    if args.do_vote:
+        vote(args)
+
+    if args.do_eval:
         evaluate(args)
-    elif args.do_train_cv:
-        train_cv(args)
-    elif args.do_predict_cv:
-        predict_cv(args)
-    elif args.do_merge:
-        merge_cv_result(args)
-    else:
-        train(args)

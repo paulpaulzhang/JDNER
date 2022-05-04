@@ -104,11 +104,13 @@ class MyGlobalPointerNERTask(Task):
                 self.ema.copy_to(self.module.parameters())
 
             if save_each_model:
-                torch.save(self.module.state_dict(),
-                           os.path.join(ckpt, f'epoch{epoch}.pth'))
-            else:
-                torch.save(self.module.state_dict(),
-                           os.path.join(ckpt, f'last_model.pth'))
+                state_dict = {k: v for k, v in self.module.state_dict(
+                ).items() if 'relative_positions' not in k}
+                torch.save(state_dict, os.path.join(ckpt, f'epoch{epoch}.pth'))
+            # else:
+            #     state_dict = {k: v for k, v in self.module.state_dict(
+            #     ).items() if 'relative_positions' not in k}
+            #     torch.save(state_dict, os.path.join(ckpt, f'last_model.pth'))
 
             if self.ema_decay:
                 self.ema.restore(self.module.parameters())
@@ -211,11 +213,16 @@ class MyGlobalPointerNERTask(Task):
             self.fgm.restore()
 
         if args.use_pgd:
-            self.pgd.attack(epsilon=args.epsilon,
-                            alpha=args.alpha, emb_name=args.emb_name)
-            logits = self.module(**inputs)
-            _, attck_loss = self._get_train_loss(inputs, logits, **kwargs)
-            attck_loss.backward()
+            self.pgd.backup_grad()
+            for t in range(args.adv_k):
+                self.pgd.attack(is_first_attack=(t == 0))
+                if t != args.adv_k - 1:
+                    self.module.zero_grad()
+                else:
+                    self.pgd.restore_grad()
+                logits = self.module(**inputs)
+                _, attck_loss = self._get_train_loss(inputs, logits, **kwargs)
+                attck_loss.backward()
             self.pgd.restore()
 
         self._on_backward_record(loss, **kwargs)
@@ -291,8 +298,9 @@ class MyGlobalPointerNERTask(Task):
 
         if self.evaluate_logs['f1'] > self.best_f1 and ckpt:
             self.best_f1 = self.evaluate_logs['f1']
-            torch.save(self.module.state_dict(),
-                       os.path.join(ckpt, f'best_model.pth'))
+            state_dict = {k: v for k, v in self.module.state_dict(
+            ).items() if 'relative_positions' not in k}
+            torch.save(state_dict, os.path.join(ckpt, f'best_model.pth'))
 
         if self.ema_decay:
             self.ema.restore(self.module.parameters())
