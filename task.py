@@ -1,16 +1,18 @@
 from ast import arg
+import math
 import os
 import warnings
-from ark_nlp.model.ner.global_pointer_bert import Task
-from ark_nlp.factory.utils.attack import FGM, PGD
+from ark_nlp.factory.task.base._sequence_classification import SequenceClassificationTask
+from utils import FGM, PGD
 from torch.utils.data import DataLoader
 from ark_nlp.factory.optimizer import get_optimizer
 import torch
-from utils import get_evaluate_fpr, Logs
+from utils import Logs
 from tqdm import tqdm
+from utils import metrics
 
 
-class MyGlobalPointerNERTask(Task):
+class Task(SequenceClassificationTask):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -26,7 +28,6 @@ class MyGlobalPointerNERTask(Task):
         batch_size=32,
         epochs=1,
         gradient_accumulation_steps=1,
-        save_each_model=True,
         **kwargs
     ):
         """
@@ -60,18 +61,29 @@ class MyGlobalPointerNERTask(Task):
             args.checkpoint, args.model_type)
         os.makedirs(ckpt, exist_ok=True)
         logs = Logs(os.path.join(ckpt, 'log.txt'))
-        logs.write(str(args) + '\n')
+        for k, v in vars(args).items():
+            logs.write(f'{k}: {v}' + '\n')
         logs.write(
-            f"|{'epoch':^15}|{'loss':^15}|{'precision':^15}|{'recall':^15}|{'f1':^15}|{'best model':^15}|\n")
+            f"|{'steps':^15}|{'loss':^15}|{'precision':^15}|{'recall':^15}|{'f1':^15}|\n")
 
+        one_epoch = int(math.ceil(len(train_generator) /
+                        gradient_accumulation_steps))  # 将step转换为epoch
+        total_steps = epochs * one_epoch
+        cur_steps = 0
+
+        args.early_stopping = int(
+            math.ceil(args.early_stopping * one_epoch / args.eval_steps))
+        early_stopping = args.early_stopping
+
+        if args.training_strategy == 'epoch':
+            args.eval_steps = one_epoch
+
+        progress_bar = tqdm(range(total_steps))
         for epoch in range(1, epochs+1):
 
             self._on_epoch_begin(**kwargs)
 
-            train_iterator = tqdm(
-                train_generator, desc=f'Epoch : {epoch}', total=len(train_generator))
-
-            for step, inputs in enumerate(train_iterator):
+            for step, inputs in enumerate(train_generator):
 
                 self._on_step_begin(epoch, step, inputs, **kwargs)
 
@@ -85,53 +97,46 @@ class MyGlobalPointerNERTask(Task):
                 loss = self._on_backward(
                     inputs, outputs, logits, loss, args=args, **kwargs)
 
-                if (step + 1) % gradient_accumulation_steps == 0:
+                if (step + 1) % gradient_accumulation_steps == 0 or (step + 1) == len(train_generator):
 
                     # optimize
                     self._on_optimize(inputs, outputs, logits, loss, **kwargs)
 
-                # setp evaluate
-                self._on_step_end(step, inputs, outputs,
-                                  loss, verbose=False, **kwargs)
-                train_iterator.set_postfix_str(
-                    f"training loss: {(self.logs['epoch_loss'] / self.logs['epoch_step']):.4f}")
+                    progress_bar.set_postfix_str(
+                        "epoch: {:.2f} loss: {:.4f}".
+                        format(cur_steps / len(train_generator),
+                               (self.logs['epoch_loss'] / self.logs['epoch_step'])))
 
-            self._on_epoch_end(epoch, verbose=False, **kwargs)
+                    progress_bar.update(1)
+                    cur_steps += 1
 
+                    if cur_steps % args.eval_steps == 0 or (step + 1) == len(train_generator):
+                        if validation_data is not None:
+                            self.evaluate(validation_data,
+                                          ckpt=ckpt, ** kwargs)
 
-            if self.ema_decay:
-                self.ema.store(self.module.parameters())
-                self.ema.copy_to(self.module.parameters())
+                            content = "|{:^15}|{:^15}|{:^15}|{:^15}|{:^15}|\n".format(
+                                cur_steps,
+                                round(self.evaluate_logs['eval_loss'] /
+                                      self.evaluate_logs['eval_step'], 3),
+                                round(self.evaluate_logs['precision'], 3), round(
+                                    self.evaluate_logs['recall'], 3),
+                                round(self.evaluate_logs['f1'], 5))
+                            logs.write(content)
 
-            if save_each_model:
-                state_dict = {k: v for k, v in self.module.state_dict(
-                ).items() if 'relative_positions' not in k}
-                torch.save(state_dict, os.path.join(ckpt, f'epoch{epoch}.pth'))
-            # else:
-            #     state_dict = {k: v for k, v in self.module.state_dict(
-            #     ).items() if 'relative_positions' not in k}
-            #     torch.save(state_dict, os.path.join(ckpt, f'last_model.pth'))
+                            if self.evaluate_logs['f1'] < self.best_f1:
+                                early_stopping -= 1
+                            else:
+                                early_stopping = args.early_stopping
 
-            if self.ema_decay:
-                self.ema.restore(self.module.parameters())
+                            if early_stopping == 0:
+                                self._on_train_end(**kwargs)
+                                return
 
-            if validation_data is not None:
-                self.evaluate(validation_data, ckpt=ckpt, ** kwargs)
+                            self.module.train()
 
-                content = "|{:^15}|{:^15}|{:^15}|{:^15}|{:^15}|{:^15}|\n".format(
-                    epoch,
-                    round(self.evaluate_logs['eval_loss'] /
-                          self.evaluate_logs['eval_step'], 5),
-                    round(self.evaluate_logs['precision'], 5), round(
-                        self.evaluate_logs['recall'], 5),
-                    round(self.evaluate_logs['f1'], 5), 'True' if self.evaluate_logs['f1'] > \
-                        self.best_f1 else '')
-                logs.write(content)
-
-                if self.evaluate_logs['f1'] < self.best_f1:
-                    break
-
-        self._on_train_end(**kwargs)
+        print('best f1:', self.best_f1)
+        self._on_train_end(ckpt=ckpt, **kwargs)
 
     def _on_train_begin(
         self,
@@ -185,6 +190,19 @@ class MyGlobalPointerNERTask(Task):
 
         return train_generator
 
+    def _on_train_end(self, ckpt=None, save_last_model=False, **kwargs):
+        if save_last_model:
+            if self.ema_decay:
+                self.ema.store(self.module.parameters())
+                self.ema.copy_to(self.module.parameters())
+
+            state_dict = {k: v for k, v in self.module.state_dict(
+            ).items() if 'relative_positions' not in k}
+            torch.save(state_dict, os.path.join(ckpt, f'last_model.pth'))
+
+            if self.ema_decay:
+                self.ema.restore(self.module.parameters())
+
     def _on_backward(
         self,
         inputs,
@@ -217,7 +235,7 @@ class MyGlobalPointerNERTask(Task):
             for t in range(args.adv_k):
                 self.pgd.attack(is_first_attack=(t == 0))
                 if t != args.adv_k - 1:
-                    self.module.zero_grad()
+                    self.optimizer.zero_grad()
                 else:
                     self.pgd.restore_grad()
                 logits = self.module(**inputs)
@@ -239,9 +257,8 @@ class MyGlobalPointerNERTask(Task):
         self.evaluate_logs['logits'] = []
         self.evaluate_logs['input_lengths'] = []
 
-        self.evaluate_logs['tp'] = 0
-        self.evaluate_logs['fp'] = 0
-        self.evaluate_logs['fn'] = 0
+        self.evaluate_logs['y_true'] = []
+        self.evaluate_logs['y_pred'] = []
 
         self.evaluate_logs['f1'] = 0
         self.evaluate_logs['precision'] = 0
@@ -254,13 +271,9 @@ class MyGlobalPointerNERTask(Task):
             # compute loss
             logits, loss = self._get_evaluate_loss(inputs, outputs, **kwargs)
 
-            tp, fp, fn = get_evaluate_fpr(
-                inputs['label_ids'].to_dense(),
-                logits
-            )
-            self.evaluate_logs['tp'] += tp
-            self.evaluate_logs['fp'] += fp
-            self.evaluate_logs['fn'] += fn
+            self.evaluate_logs['y_true'] += inputs['label_ids'].cpu().numpy().tolist()
+            self.evaluate_logs['y_pred'] += torch.argmax(
+                logits, dim=1).cpu().numpy().tolist()
 
         self.evaluate_logs['eval_example'] += len(inputs['label_ids'])
         self.evaluate_logs['eval_step'] += 1
@@ -279,15 +292,12 @@ class MyGlobalPointerNERTask(Task):
             id2cat = self.id2cat
 
         if is_evaluate_print:
-            precision = self.evaluate_logs['tp'] / \
-                (self.evaluate_logs['tp'] + self.evaluate_logs['fp'])
-            recall = self.evaluate_logs['tp'] / \
-                (self.evaluate_logs['tp'] + self.evaluate_logs['fn'])
-            f1 = 2 * precision * recall / (precision + recall)
+            f1, precision, recall = metrics(
+                self.evaluate_logs['y_true'], self.evaluate_logs['y_pred'])
             self.evaluate_logs['f1'] = f1
             self.evaluate_logs['precision'] = precision
             self.evaluate_logs['recall'] = recall
-            print('eval loss: {:.6f}, precision: {:.6f}, recall: {:.6f}, f1_score: {:.6f}\n'.format(
+            print('\neval loss: {:.3f}, precision: {:.4f}, recall: {:.4f}, f1_score: {:.5f}\n'.format(
                 self.evaluate_logs['eval_loss'] /
                 self.evaluate_logs['eval_step'],
                 precision, recall, f1))

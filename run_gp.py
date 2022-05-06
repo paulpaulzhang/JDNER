@@ -10,7 +10,7 @@ from nezha.modeling_nezha import NeZhaModel
 from tokenizer import BertTokenizer
 from utils import WarmupLinearSchedule, seed_everything, get_default_bert_optimizer
 from sklearn.model_selection import train_test_split, KFold
-from task import MyGlobalPointerNERTask
+from task import Task
 from data import read_data
 from tqdm import tqdm
 from argparse import ArgumentParser
@@ -57,7 +57,7 @@ def train(args):
 
     torch.cuda.empty_cache()
 
-    model = MyGlobalPointerNERTask(
+    model = Task(
         dl_module, optimizer, 'gpce',
         scheduler=scheduler,
         ema_decay=args.ema_decay,
@@ -97,7 +97,7 @@ def evaluate(args):
 
     torch.cuda.empty_cache()
 
-    model = MyGlobalPointerNERTask(
+    model = Task(
         dl_module, optimizer, 'gpce',
         ema_decay=args.ema_decay,
         cuda_device=args.cuda_device)
@@ -196,7 +196,7 @@ def train_cv(args):
         else:
             scheduler = None
 
-        model = MyGlobalPointerNERTask(
+        model = Task(
             dl_module, optimizer, 'gpce',
             scheduler=scheduler,
             ema_decay=args.ema_decay,
@@ -350,6 +350,11 @@ if __name__ == '__main__':
     parser.add_argument('--num_epochs', type=int, default=10)
     parser.add_argument('--batch_size', type=int, default=16)
     parser.add_argument('--fold', type=int, default=10)
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=1)
+    parser.add_argument('--eval_steps', type=int, default=100)
+    parser.add_argument('--early_stopping', type=int, default=1)
+    parser.add_argument('--training_strategy', type=str,
+                        default='epoch', choices=['step', 'epoch'])
 
     parser.add_argument('--use_fgm', action='store_true', default=True)
     parser.add_argument('--use_pgd', action='store_true', default=False)
