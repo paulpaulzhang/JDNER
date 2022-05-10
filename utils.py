@@ -221,12 +221,15 @@ def get_default_bert_optimizer(
     no_decay = ["bias", "LayerNorm.weight"]
 
     bert_param_optimizer = []
+    lstm_param_optimizer = []
     gp_param_optimizer = []
 
     for name, param in model_param:
         space = name.split('.')
         if space[0] == 'encoder':
             bert_param_optimizer.append((name, param))
+        elif space[0] == 'bilstm':
+            lstm_param_optimizer.append((name, param))
         elif space[0] == 'global_pointer':
             gp_param_optimizer.append((name, param))
 
@@ -235,6 +238,11 @@ def get_default_bert_optimizer(
             "weight_decay": weight_decay, 'lr': args.lr},
         {"params": [p for n, p in bert_param_optimizer if any(nd in n for nd in no_decay)],
             "weight_decay": 0.0, 'lr': args.lr},
+
+        {"params": [p for n, p in lstm_param_optimizer if not any(nd in n for nd in no_decay)],
+            "weight_decay": weight_decay, 'lr': args.lstm_lr},
+        {"params": [p for n, p in lstm_param_optimizer if any(nd in n for nd in no_decay)],
+            "weight_decay": 0.0, 'lr': args.lstm_lr},
 
         {"params": [p for n, p in gp_param_optimizer if not any(nd in n for nd in no_decay)],
             "weight_decay": weight_decay, 'lr': args.gp_lr},

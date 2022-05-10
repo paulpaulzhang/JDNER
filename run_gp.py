@@ -10,7 +10,7 @@ from nezha.modeling_nezha import NeZhaModel
 from tokenizer import BertTokenizer
 from utils import WarmupLinearSchedule, seed_everything, get_default_bert_optimizer
 from sklearn.model_selection import train_test_split, KFold
-from task import Task
+from task import MyGlobalPointerNERTask, DistillTask
 from data import read_data
 from tqdm import tqdm
 from argparse import ArgumentParser
@@ -49,7 +49,8 @@ def train(args):
 
     if args.warmup_ratio:
         train_steps = args.num_epochs * \
-            int(math.ceil(len(ner_train_dataset) / args.batch_size))
+            int(math.ceil(math.ceil(len(ner_train_dataset) /
+                args.batch_size) / args.gradient_accumulation_steps))
         scheduler = WarmupLinearSchedule(
             optimizer, warmup_steps=train_steps * args.warmup_ratio, t_total=train_steps)
     else:
@@ -57,18 +58,18 @@ def train(args):
 
     torch.cuda.empty_cache()
 
-    model = Task(
+    model = MyGlobalPointerNERTask(
         dl_module, optimizer, 'gpce',
         scheduler=scheduler,
         ema_decay=args.ema_decay,
-        cuda_device=args.cuda_device)
+        device=args.device)
 
     model.fit(args,
               ner_train_dataset,
               ner_dev_dataset,
               epochs=args.num_epochs,
               batch_size=args.batch_size,
-              save_each_model=False)
+              save_last_model=False)
 
 
 def evaluate(args):
@@ -97,10 +98,10 @@ def evaluate(args):
 
     torch.cuda.empty_cache()
 
-    model = Task(
+    model = MyGlobalPointerNERTask(
         dl_module, optimizer, 'gpce',
         ema_decay=args.ema_decay,
-        cuda_device=args.cuda_device)
+        device=args.device)
 
     model.id2cat = ner_train_dataset.id2cat
     model.evaluate(ner_dev_dataset)
@@ -122,7 +123,7 @@ def predict(args):
     encoder = NeZhaModel(config)
     model = GlobalPointerModel(config, encoder)
     model.load_state_dict(torch.load(args.predict_model), strict=False)
-    model.to(torch.device(f'cuda:{args.cuda_device}'))
+    model.to(torch.device(args.device))
 
     ner_predictor_instance = GlobalPointerNERPredictor(
         model, tokenizer, ner_train_dataset.cat2id)
@@ -190,24 +191,26 @@ def train_cv(args):
 
         if args.warmup_ratio:
             train_steps = args.num_epochs * \
-                int(math.ceil(len(ner_train_dataset) / args.batch_size))
+                int(math.ceil(math.ceil(len(ner_train_dataset) /
+                    args.batch_size) / args.gradient_accumulation_steps))
             scheduler = WarmupLinearSchedule(
                 optimizer, warmup_steps=train_steps * args.warmup_ratio, t_total=train_steps)
         else:
             scheduler = None
 
-        model = Task(
+        model = MyGlobalPointerNERTask(
             dl_module, optimizer, 'gpce',
             scheduler=scheduler,
             ema_decay=args.ema_decay,
-            cuda_device=args.cuda_device)
+            device=args.device)
 
         model.fit(args,
                   ner_train_dataset,
                   ner_dev_dataset,
                   epochs=args.num_epochs,
                   batch_size=args.batch_size,
-                  save_each_model=False)
+                  save_last_model=False,
+                  gradient_accumulation_steps=args.gradient_accumulation_steps)
 
         del model, tokenizer, dl_module, encoder, optimizer, scheduler
         gc.collect()
@@ -243,7 +246,7 @@ def predict_vote(args):
         encoder = NeZhaModel(config)
         model = GlobalPointerModel(config, encoder)
         model.load_state_dict(torch.load(args.predict_model), strict=False)
-        model.to(torch.device(f'cuda:{args.cuda_device}'))
+        model.to(torch.device(args.device))
 
         ner_predictor_instance = GlobalPointerNERPredictor(
             model, tokenizer, ner_train_dataset.cat2id)
@@ -275,6 +278,67 @@ def predict_vote(args):
                         continue
                     f.write(f'{word} {tag}\n')
                 f.write('\n')
+
+
+def distill(args):
+    datalist, label_set = read_data(args.data_path)
+    train_data_df = pd.DataFrame(datalist)
+    train_data_df['label'] = train_data_df['label'].apply(lambda x: str(x))
+    train_data_df, dev_data_df = train_test_split(
+        train_data_df, test_size=0.1, shuffle=True, random_state=args.seed)
+
+    ner_train_dataset = Dataset(train_data_df, categories=label_set)
+    ner_dev_dataset = Dataset(
+        dev_data_df, categories=ner_train_dataset.categories)
+
+    tokenizer = BertTokenizer(vocab=args.model_name_or_path,
+                              max_seq_len=args.max_seq_len)
+    config = NeZhaConfig.from_pretrained(args.model_name_or_path,
+                                         num_labels=len(ner_train_dataset.cat2id))
+    encoder = NeZhaModel.from_pretrained(args.model_name_or_path,
+                                         config=config)
+    student = GlobalPointerModel(config, encoder)
+
+    def teacher(path, config, device):
+        encoder = NeZhaModel(config)
+        model = GlobalPointerModel(config, encoder)
+        model.load_state_dict(torch.load(path), strict=False)
+        model.to(torch.device(device))
+        model.eval()
+        return model
+
+    teachers = [teacher(os.path.join(args.checkpoint, args.model_type,
+                                     f'{args.model_type}-{fold + 1}', 'best_model.pth'),
+                        config, args.device) for fold in range(args.fold)]
+
+    ner_train_dataset.convert_to_ids(tokenizer)
+    ner_dev_dataset.convert_to_ids(tokenizer)
+
+    optimizer = get_default_bert_optimizer(student, args)
+
+    if args.warmup_ratio:
+        train_steps = args.num_epochs * \
+            int(math.ceil(math.ceil(len(ner_train_dataset) /
+                args.batch_size) / args.gradient_accumulation_steps))
+        scheduler = WarmupLinearSchedule(
+            optimizer, warmup_steps=train_steps * args.warmup_ratio, t_total=train_steps)
+    else:
+        scheduler = None
+
+    torch.cuda.empty_cache()
+
+    model = DistillTask(teachers,
+                        student, optimizer, 'gpce',
+                        scheduler=scheduler,
+                        ema_decay=args.ema_decay,
+                        device=args.device)
+
+    model.fit(args,
+              ner_train_dataset,
+              ner_dev_dataset,
+              epochs=args.num_epochs,
+              batch_size=args.batch_size,
+              save_last_model=False)
 
 
 def vote(args):
@@ -318,9 +382,9 @@ if __name__ == '__main__':
     parser = ArgumentParser()
 
     parser.add_argument('--model_type', type=str,
-                        default='gp-nezha-base')
+                        default='nezha-cn-base')
     parser.add_argument('--model_name_or_path', type=str,
-                        default='../pretrain_model/nezha-base/')
+                        default='../pretrain_model/nezha-cn-base/')
 
     parser.add_argument('--checkpoint', type=str,
                         default='./checkpoint')
@@ -329,44 +393,45 @@ if __name__ == '__main__':
     parser.add_argument('--test_file', type=str,
                         default='../data/preliminary_test_b/sample_per_line_preliminary_B.txt')
     parser.add_argument('--save_path', type=str, default='./submit')
-    parser.add_argument('--vote_path', type=str, default='./submit')
-    parser.add_argument('--extend_save_path', type=str,
-                        default='./extend_data/')
-    parser.add_argument('--save_name', type=str, default='merged_res.txt')
 
-    parser.add_argument('--do_train', action='store_true', default=False)
     parser.add_argument('--do_predict', action='store_true', default=False)
     parser.add_argument('--do_eval', action='store_true', default=False)
     parser.add_argument('--do_train_cv', action='store_true', default=False)
     parser.add_argument('--do_predict_vote',
                         action='store_true', default=False)
     parser.add_argument('--do_vote', action='store_true', default=False)
+    parser.add_argument('--do_distill', action='store_true', default=False)
     parser.add_argument('--predict_model', type=str)
 
     parser.add_argument('--max_seq_len', type=int, default=128)
 
     parser.add_argument('--lr', type=float, default=2e-5)
+    parser.add_argument('--lstm_lr', type=float, default=1e-2)
     parser.add_argument('--gp_lr', type=float, default=2e-3)
     parser.add_argument('--num_epochs', type=int, default=10)
     parser.add_argument('--batch_size', type=int, default=16)
-    parser.add_argument('--fold', type=int, default=10)
+    parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--gradient_accumulation_steps', type=int, default=1)
-    parser.add_argument('--eval_steps', type=int, default=100)
     parser.add_argument('--early_stopping', type=int, default=1)
-    parser.add_argument('--training_strategy', type=str,
-                        default='epoch', choices=['step', 'epoch'])
 
     parser.add_argument('--use_fgm', action='store_true', default=True)
     parser.add_argument('--use_pgd', action='store_true', default=False)
-
     parser.add_argument('--ema_decay', type=float, default=0.999)
     parser.add_argument('--warmup_ratio', type=float, default=0.01)
+
     parser.add_argument('--adv_k', type=int, default=3)
     parser.add_argument('--alpha', type=float, default=0.3)
     parser.add_argument('--epsilon', type=float, default=0.3)
     parser.add_argument('--emb_name', type=str, default='word_embeddings.')
 
-    parser.add_argument('--cuda_device', type=int, default=0)
+    parser.add_argument('--fold', type=int, default=10)
+    parser.add_argument('--extend_save_path', type=str,
+                        default='./extend_data/')
+    parser.add_argument('--save_name', type=str, default='merged_res.txt')
+    parser.add_argument('--vote_path', type=str,
+                        default='./submit/')
+
+    parser.add_argument('--device', type=str, default='cuda:0')
     parser.add_argument('--seed', type=int, default=42)
 
     args = parser.parse_args()
@@ -377,19 +442,17 @@ if __name__ == '__main__':
 
     print(args)
 
-    if args.do_train_cv:
-        train_cv(args)
-    if args.do_train:
-        train(args)
-
     if args.do_predict:
         predict(args)
-
-    if args.do_predict_vote:
-        predict_vote(args)
-
-    if args.do_vote:
-        vote(args)
-
-    if args.do_eval:
+    elif args.do_eval:
         evaluate(args)
+    elif args.do_train_cv:
+        train_cv(args)
+    elif args.do_predict_vote:
+        predict_vote(args)
+    elif args.do_vote:
+        vote(args)
+    elif args.do_distill:
+        distill(args)
+    else:
+        train(args)
