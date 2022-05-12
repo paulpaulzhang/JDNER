@@ -161,6 +161,57 @@ class PGD:
                 param.grad = self.grad_backup[name]
 
 
+class AWP:
+    def __init__(
+        self,
+        model,
+        adv_param="weight",
+        adv_lr=1,
+        adv_eps=0.2,
+        adv_step=1,
+    ):
+        self.model = model
+        self.adv_param = adv_param
+        self.adv_lr = adv_lr
+        self.adv_eps = adv_eps
+        self.adv_step = adv_step
+        self.backup = {}
+        self.backup_eps = {}
+
+    def attack_step(self):
+        e = 1e-6
+        for name, param in self.model.named_parameters():
+            if param.requires_grad and param.grad is not None and self.adv_param in name:
+                norm1 = torch.norm(param.grad)
+                norm2 = torch.norm(param.data.detach())
+                if norm1 != 0 and not torch.isnan(norm1):
+                    r_at = self.adv_lr * param.grad / (norm1 + e) * (norm2 + e)
+                    param.data.add_(r_at)
+                    param.data = torch.min(
+                        torch.max(
+                            param.data, self.backup_eps[name][0]), self.backup_eps[name][1]
+                    )
+                # param.data.clamp_(*self.backup_eps[name])
+
+    def save(self):
+        for name, param in self.model.named_parameters():
+            if param.requires_grad and param.grad is not None and self.adv_param in name:
+                if name not in self.backup:
+                    self.backup[name] = param.data.clone()
+                    grad_eps = self.adv_eps * param.abs().detach()
+                    self.backup_eps[name] = (
+                        self.backup[name] - grad_eps,
+                        self.backup[name] + grad_eps,
+                    )
+
+    def restore(self,):
+        for name, param in self.model.named_parameters():
+            if name in self.backup:
+                param.data = self.backup[name]
+        self.backup = {}
+        self.backup_eps = {}
+
+
 def seed_everything(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
@@ -184,14 +235,15 @@ def get_evaluate_fpr(y_true, y_pred):
 
     R = set(pred)
     T = set(true)
-    X = len(R & T)  # X = tp
-    Y = len(R)  # fp = Y - X
-    Z = len(T)  # fn = Z - X
-    return X, Y - X, Z - X
+    X = len(R & T)
+    Y = len(R)
+    Z = len(T)
+    f1, precision, recall = 2 * X / (Y + Z), X / Y, X / Z
+    return f1, precision, recall
 
 
 def compute_kl_loss(p, q, pad_mask=None):
-
+    # 当gp输出时使用sigmoid，其余使用softmax函数
     p_loss = F.kl_div(F.sigmoid(p),
                       F.sigmoid(q), reduction='none')
     q_loss = F.kl_div(F.sigmoid(q),
@@ -215,7 +267,6 @@ def get_default_bert_optimizer(
     args,
     eps: float = 1e-6,
     correct_bias: bool = True,
-    weight_decay: float = 1e-3,
 ):
     model_param = list(module.named_parameters())
     no_decay = ["bias", "LayerNorm.weight"]
@@ -235,17 +286,17 @@ def get_default_bert_optimizer(
 
     optimizer_grouped_parameters = [
         {"params": [p for n, p in bert_param_optimizer if not any(nd in n for nd in no_decay)],
-            "weight_decay": weight_decay, 'lr': args.lr},
+            "weight_decay": args.weight_decay, 'lr': args.lr},
         {"params": [p for n, p in bert_param_optimizer if any(nd in n for nd in no_decay)],
             "weight_decay": 0.0, 'lr': args.lr},
 
         {"params": [p for n, p in lstm_param_optimizer if not any(nd in n for nd in no_decay)],
-            "weight_decay": weight_decay, 'lr': args.lstm_lr},
+            "weight_decay": args.weight_decay, 'lr': args.lstm_lr},
         {"params": [p for n, p in lstm_param_optimizer if any(nd in n for nd in no_decay)],
             "weight_decay": 0.0, 'lr': args.lstm_lr},
 
         {"params": [p for n, p in gp_param_optimizer if not any(nd in n for nd in no_decay)],
-            "weight_decay": weight_decay, 'lr': args.gp_lr},
+            "weight_decay": args.weight_decay, 'lr': args.gp_lr},
         {"params": [p for n, p in gp_param_optimizer if any(nd in n for nd in no_decay)],
             "weight_decay": 0.0, 'lr': args.gp_lr},
     ]
@@ -254,7 +305,7 @@ def get_default_bert_optimizer(
                       lr=args.lr,
                       eps=eps,
                       correct_bias=correct_bias,
-                      weight_decay=weight_decay)
+                      weight_decay=args.weight_decay)
     return optimizer
 
 

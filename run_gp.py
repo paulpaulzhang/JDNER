@@ -407,27 +407,32 @@ if __name__ == '__main__':
 
     parser.add_argument('--lr', type=float, default=2e-5)
     parser.add_argument('--lstm_lr', type=float, default=1e-2)
-    parser.add_argument('--gp_lr', type=float, default=2e-3)
+    parser.add_argument('--gp_lr', type=float, default=2e-4)
+    parser.add_argument('--weight_decay', type=float, default=1e-3)
+
     parser.add_argument('--num_epochs', type=int, default=10)
     parser.add_argument('--batch_size', type=int, default=16)
-    parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--gradient_accumulation_steps', type=int, default=1)
     parser.add_argument('--early_stopping', type=int, default=1)
+    parser.add_argument('--num_workers', type=int, default=0)
 
-    parser.add_argument('--use_fgm', action='store_true', default=True)
+    parser.add_argument('--use_fgm', action='store_true', default=False)
     parser.add_argument('--use_pgd', action='store_true', default=False)
+    parser.add_argument('--use_awp', action='store_true', default=False)
     parser.add_argument('--ema_decay', type=float, default=0.999)
-    parser.add_argument('--warmup_ratio', type=float, default=0.01)
+    parser.add_argument('--warmup_ratio', type=float, default=0.1)
 
     parser.add_argument('--adv_k', type=int, default=3)
     parser.add_argument('--alpha', type=float, default=0.3)
-    parser.add_argument('--epsilon', type=float, default=0.3)
+    parser.add_argument('--epsilon', type=float, default=1.0)
     parser.add_argument('--emb_name', type=str, default='word_embeddings.')
+    parser.add_argument('--adv_lr', type=int, default=1)
+    parser.add_argument('--adv_eps', type=int, default=0.001)
 
-    parser.add_argument('--fold', type=int, default=10)
+    parser.add_argument('--fold', type=int, default=5)
     parser.add_argument('--extend_save_path', type=str,
                         default='./extend_data/')
-    parser.add_argument('--save_name', type=str, default='merged_res.txt')
+    parser.add_argument('--save_name', type=str, default='vote.txt')
     parser.add_argument('--vote_path', type=str,
                         default='./submit/')
 
@@ -440,7 +445,8 @@ if __name__ == '__main__':
 
     seed_everything(args.seed)
 
-    print(args)
+    for k, v in vars(args).items():
+        print(f'{k}: {v}')
 
     if args.do_predict:
         predict(args)
