@@ -118,7 +118,8 @@ class GlobalPointerNERPredictor(object):
         entities = []
         for category, start, end in zip(*np.where(scores > threshold)):
 
-            if end - start > 40 or end -1 >= len(token_mapping):  # 过滤明显预测错误的实体
+            # 过滤明显预测错误的实体
+            if end - start > 40 or end - 1 >= len(token_mapping):
                 continue
 
             # start-1与end-1是因为[CLS]在token_mapping中是不存在的，但预测时占一个位置

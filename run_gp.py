@@ -5,7 +5,7 @@ from ark_nlp.model.ner.global_pointer_bert import Dataset
 from ark_nlp.model.ner.global_pointer_bert import Predictor
 from ark_nlp.model.ner.global_pointer_bert import Tokenizer
 from nezha.configuration_nezha import NeZhaConfig
-from model import GlobalPointerModel
+from model import GlobalPointerModel, GlobalPointerBiLSTMModel
 from nezha.modeling_nezha import NeZhaModel
 from tokenizer import BertTokenizer
 from utils import WarmupLinearSchedule, seed_everything, get_default_bert_optimizer
@@ -40,7 +40,7 @@ def train(args):
                                          num_labels=len(ner_train_dataset.cat2id))
     encoder = NeZhaModel.from_pretrained(args.model_name_or_path,
                                          config=config)
-    dl_module = GlobalPointerModel(config, encoder)
+    dl_module = GlobalPointerBiLSTMModel(config, encoder)
 
     ner_train_dataset.convert_to_ids(tokenizer)
     ner_dev_dataset.convert_to_ids(tokenizer)
@@ -88,7 +88,7 @@ def evaluate(args):
     config = NeZhaConfig.from_pretrained(args.model_name_or_path,
                                          num_labels=len(ner_train_dataset.cat2id))
     encoder = NeZhaModel(config)
-    dl_module = GlobalPointerModel(config, encoder)
+    dl_module = GlobalPointerBiLSTMModel(config, encoder)
     dl_module.load_state_dict(torch.load(args.predict_model))
 
     ner_train_dataset.convert_to_ids(tokenizer)
@@ -121,7 +121,7 @@ def predict(args):
     config = NeZhaConfig.from_pretrained(args.model_name_or_path,
                                          num_labels=len(ner_train_dataset.cat2id))
     encoder = NeZhaModel(config)
-    model = GlobalPointerModel(config, encoder)
+    model = GlobalPointerBiLSTMModel(config, encoder)
     model.load_state_dict(torch.load(args.predict_model), strict=False)
     model.to(torch.device(args.device))
 
@@ -182,7 +182,7 @@ def train_cv(args):
                                              num_labels=len(ner_train_dataset.cat2id))
         encoder = NeZhaModel.from_pretrained(args.model_name_or_path,
                                              config=config)
-        dl_module = GlobalPointerModel(config, encoder)
+        dl_module = GlobalPointerBiLSTMModel(config, encoder)
 
         ner_train_dataset.convert_to_ids(tokenizer)
         ner_dev_dataset.convert_to_ids(tokenizer)
@@ -244,7 +244,7 @@ def predict_vote(args):
         config = NeZhaConfig.from_pretrained(args.model_name_or_path,
                                              num_labels=len(ner_train_dataset.cat2id))
         encoder = NeZhaModel(config)
-        model = GlobalPointerModel(config, encoder)
+        model = GlobalPointerBiLSTMModel(config, encoder)
         model.load_state_dict(torch.load(args.predict_model), strict=False)
         model.to(torch.device(args.device))
 
@@ -297,11 +297,11 @@ def distill(args):
                                          num_labels=len(ner_train_dataset.cat2id))
     encoder = NeZhaModel.from_pretrained(args.model_name_or_path,
                                          config=config)
-    student = GlobalPointerModel(config, encoder)
+    student = GlobalPointerBiLSTMModel(config, encoder)
 
     def teacher(path, config, device):
         encoder = NeZhaModel(config)
-        model = GlobalPointerModel(config, encoder)
+        model = GlobalPointerBiLSTMModel(config, encoder)
         model.load_state_dict(torch.load(path), strict=False)
         model.to(torch.device(device))
         model.eval()
@@ -407,7 +407,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--lr', type=float, default=2e-5)
     parser.add_argument('--lstm_lr', type=float, default=1e-2)
-    parser.add_argument('--gp_lr', type=float, default=2e-4)
+    parser.add_argument('--gp_lr', type=float, default=2e-3)
     parser.add_argument('--weight_decay', type=float, default=1e-3)
 
     parser.add_argument('--num_epochs', type=int, default=10)

@@ -37,31 +37,20 @@ def gen_stage2_data():
             f.write(line)
 
 
-def gen_stage3_data():
-    with open('./data/contest_data/train_data/train.txt', 'r', encoding='utf-8') as f:
-        lines1 = f.readlines()
-
-    with open('./data/tmp_data/test_pl.txt', 'r', encoding='utf-8') as f:
-        lines2 = f.readlines()
-
-    with open('./data/tmp_data/train_pl_4w.txt', 'r', encoding='utf-8') as f:
-        lines3 = f.readlines()
-
-    with open('./data/tmp_data/mix_train_data_9w.txt', 'w', encoding='utf-8') as f:
-        for line in lines1:
-            f.write(line)
-        for line in lines2:
-            f.write(line)
-        for line in lines3:
-            f.write(line)
-
-
 def get_unlabel_data_4w():
     with open('./data/contest_data/train_data/unlabeled_train_data.txt', 'r', encoding='utf-8') as f:
         lines = f.readlines()
     random.shuffle(lines)
     with open('./data/tmp_data/sample_per_line_extend_data_4w.txt', 'w', encoding='utf-8') as f:
         for line in lines[:40000]:
+            f.write(line)
+
+def get_unlabel_data_8w():
+    with open('./data/contest_data/train_data/unlabeled_train_data.txt', 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+    random.shuffle(lines)
+    with open('./data/tmp_data/sample_per_line_extend_data_4w.txt', 'w', encoding='utf-8') as f:
+        for line in lines[:80000]:
             f.write(line)
 
 
@@ -83,9 +72,9 @@ if __name__ == '__main__':
     parser.add_argument('--gen_train_line', action='store_true', default=False)
     parser.add_argument('--gen_stage2_data',
                         action='store_true', default=False)
-    parser.add_argument('--gen_stage3_data',
-                        action='store_true', default=False)
     parser.add_argument('--get_unlabel_data_4w',
+                        action='store_true', default=False)
+    parser.add_argument('--get_unlabel_data_8w',
                         action='store_true', default=False)
 
     args = parser.parse_args()
@@ -94,13 +83,13 @@ if __name__ == '__main__':
         print('get_unlabel_data_4w')
         get_unlabel_data_4w()
 
+    if args.get_unlabel_data_8w:
+        print('get_unlabel_data_8w')
+        get_unlabel_data_8w()
+
     if args.gen_stage2_data:
         print('gen_stage2_data')
         gen_stage2_data()
-
-    if args.gen_stage3_data:
-        print('gen_stage3_data')
-        gen_stage3_data()
 
     if args.gen_train_line:
         print('gen_train_line')

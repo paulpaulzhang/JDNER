@@ -1,5 +1,5 @@
 from nezha.configuration_nezha import NeZhaConfig
-from model import GlobalPointerModel
+from model import GlobalPointerModel, GlobalPointerBiLSTMModel
 from nezha.modeling_nezha import NeZhaModel
 from tokenizer import BertTokenizer
 import torch
@@ -22,7 +22,7 @@ class Args:
         self.model_name_or_path = './'
         self.max_seq_len = 128
         self.cuda_device = 0
-        self.predict_model = '/home/mw/project/checkpoint/nezha/best_model.pth'
+        self.predict_model = '/home/mw/project/checkpoint/nezha_cn_base_1/best_model.pth'
 
 
 args = Args()
@@ -36,7 +36,7 @@ def pred_BIO(path_word: str, path_sample: str, batch_size: int):
     config = NeZhaConfig.from_pretrained(args.model_name_or_path,
                                          num_labels=len(cat2id))
     encoder = NeZhaModel(config)
-    model = GlobalPointerModel(config, encoder)
+    model = GlobalPointerBiLSTMModel(config, encoder)
     model.load_state_dict(torch.load(args.predict_model), strict=False)
     model.to(torch.device(f'cuda:{args.cuda_device}'))
 

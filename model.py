@@ -55,7 +55,7 @@ class GlobalPointerBiLSTMModel(nn.Module):
         encoder_trained=True,
         head_size=64
     ):
-        super(GlobalPointerModel, self).__init__()
+        super(GlobalPointerBiLSTMModel, self).__init__()
 
         self.num_labels = config.num_labels
 
