@@ -277,11 +277,11 @@ def get_default_bert_optimizer(
 
     for name, param in model_param:
         space = name.split('.')
-        if 'bert' in space[0]:
+        if space[0] == 'encoder':
             bert_param_optimizer.append((name, param))
-        elif 'bilstm' in space[0]:
+        elif space[0] == 'bilstm':
             lstm_param_optimizer.append((name, param))
-        elif 'global_pointer' in space[0]:
+        elif space[0] == 'global_pointer':
             gp_param_optimizer.append((name, param))
 
     optimizer_grouped_parameters = [
