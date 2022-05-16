@@ -72,6 +72,49 @@ def train(args):
               save_last_model=False)
 
 
+def train_all(args):
+    datalist, label_set = read_data(args.data_path)
+    train_data_df = pd.DataFrame(datalist)
+    train_data_df['label'] = train_data_df['label'].apply(lambda x: str(x))
+
+    ner_train_dataset = Dataset(train_data_df, categories=label_set)
+
+    tokenizer = BertTokenizer(vocab=args.model_name_or_path,
+                              max_seq_len=args.max_seq_len)
+    config = NeZhaConfig.from_pretrained(args.model_name_or_path,
+                                         num_labels=len(ner_train_dataset.cat2id))
+    encoder = NeZhaModel.from_pretrained(args.model_name_or_path,
+                                         config=config)
+    dl_module = GlobalPointerBiLSTMModel(config, encoder)
+
+    ner_train_dataset.convert_to_ids(tokenizer)
+
+    optimizer = get_default_bert_optimizer(dl_module, args)
+
+    if args.warmup_ratio:
+        train_steps = args.num_epochs * \
+            int(math.ceil(math.ceil(len(ner_train_dataset) /
+                args.batch_size) / args.gradient_accumulation_steps))
+        scheduler = WarmupLinearSchedule(
+            optimizer, warmup_steps=train_steps * args.warmup_ratio, t_total=train_steps)
+    else:
+        scheduler = None
+
+    torch.cuda.empty_cache()
+
+    model = MyGlobalPointerNERTask(
+        dl_module, optimizer, 'gpce',
+        scheduler=scheduler,
+        ema_decay=args.ema_decay,
+        device=args.device)
+
+    model.fit(args,
+              ner_train_dataset,
+              epochs=args.num_epochs,
+              batch_size=args.batch_size,
+              save_last_model=True)
+
+
 def evaluate(args):
     datalist, label_set = read_data(args.data_path)
     train_data_df = pd.DataFrame(datalist)
@@ -397,6 +440,7 @@ if __name__ == '__main__':
     parser.add_argument('--do_predict', action='store_true', default=False)
     parser.add_argument('--do_eval', action='store_true', default=False)
     parser.add_argument('--do_train_cv', action='store_true', default=False)
+    parser.add_argument('--do_train_all', action='store_true', default=False)
     parser.add_argument('--do_predict_vote',
                         action='store_true', default=False)
     parser.add_argument('--do_vote', action='store_true', default=False)
@@ -460,5 +504,7 @@ if __name__ == '__main__':
         vote(args)
     elif args.do_distill:
         distill(args)
+    elif args.do_train_all:
+        train_all(args)
     else:
         train(args)
