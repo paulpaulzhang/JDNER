@@ -314,6 +314,64 @@ def predict_vote(args):
                     f.write(f'{word} {tag}\n')
                 f.write('\n')
 
+def predict_merge(args):
+    datalist, label_set = read_data(args.data_path)
+    data_df = pd.DataFrame(datalist)
+    data_df['label'] = data_df['label'].apply(lambda x: str(x))
+
+    dataset = Dataset(data_df, categories=label_set)
+
+    tokenizer = BertTokenizer(vocab=args.model_name_or_path,
+                              max_seq_len=args.max_seq_len)
+    config = NeZhaConfig.from_pretrained(args.model_name_or_path,
+                                         num_labels=len(dataset.cat2id))
+
+    os.makedirs(args.save_path, exist_ok=True)
+
+    def classifier(path, config, device):
+        encoder = NeZhaModel(config)
+        model = GlobalPointerBiLSTMModel(config, encoder)
+        model.load_state_dict(torch.load(path), strict=False)
+        model.to(torch.device(device))
+        model.eval()
+        return model
+
+    paths = [str(p) for p in list(
+        Path(args.cv_model_path).glob('**/best_model.pth'))]
+
+    models = [classifier(path, config, args.device) for path in paths]
+
+    ner_predictor_instance = GlobalPointerNERPredictor(
+        models, tokenizer, dataset.cat2id)
+
+    predict_results = []
+
+    with open(args.test_file, 'r', encoding='utf-8') as f:
+        lines = f.readlines()
+        for _line in tqdm(lines):
+            label = len(_line) * ['O']
+            for _preditc in ner_predictor_instance.predict_one_sample_cv(_line[:-1]):
+                if 'I' in label[_preditc['start_idx']]:
+                    continue
+                if 'B' in label[_preditc['start_idx']] and 'O' not in label[_preditc['end_idx']]:
+                    continue
+                if 'O' in label[_preditc['start_idx']] and 'B' in label[_preditc['end_idx']]:
+                    continue
+
+                label[_preditc['start_idx']] = 'B-' + _preditc['type']
+                label[_preditc['start_idx']+1: _preditc['end_idx']+1] = (
+                    _preditc['end_idx'] - _preditc['start_idx']) * [('I-' + _preditc['type'])]
+
+            predict_results.append([_line, label])
+
+    with open(os.path.join(args.save_path, f'{args.save_name}'), 'w', encoding='utf-8') as f:
+        for _result in predict_results:
+            for word, tag in zip(_result[0], _result[1]):
+                if word == '\n':
+                    continue
+                f.write(f'{word} {tag}\n')
+            f.write('\n')
+
 
 def distill(args):
     datalist, label_set = read_data(args.data_path)
@@ -436,6 +494,8 @@ if __name__ == '__main__':
     parser.add_argument('--do_train_all', action='store_true', default=False)
     parser.add_argument('--do_predict_vote',
                         action='store_true', default=False)
+    parser.add_argument('--do_predict_merge',
+                        action='store_true', default=False)
     parser.add_argument('--do_vote', action='store_true', default=False)
     parser.add_argument('--do_distill', action='store_true', default=False)
     parser.add_argument('--predict_model', type=str)
@@ -494,6 +554,8 @@ if __name__ == '__main__':
         train_cv(args)
     elif args.do_predict_vote:
         predict_vote(args)
+    elif args.do_predict_merge:
+        predict_merge(args)
     elif args.do_vote:
         vote(args)
     elif args.do_distill:

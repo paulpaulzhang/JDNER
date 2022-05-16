@@ -18,6 +18,7 @@
 
 import torch
 import numpy as np
+from torch import nn
 
 
 class GlobalPointerNERPredictor(object):
@@ -37,11 +38,13 @@ class GlobalPointerNERPredictor(object):
         cat2id
     ):
         self.module = module
-        self.module.task = 'TokenLevel'
 
         self.cat2id = cat2id
         self.tokenizer = tokernizer
-        self.device = list(self.module.parameters())[0].device
+        if isinstance(self.module, list):
+            self.device = list(self.module[0].parameters())[0].device
+        else:
+            self.device = list(self.module.parameters())[0].device
 
         self.id2cat = {}
         for cat_, idx_ in self.cat2id.items():
@@ -104,13 +107,58 @@ class GlobalPointerNERPredictor(object):
             text (:obj:`string`): 输入文本
             threshold (:obj:`float`, optional, defaults to 0): 预测的阈值
         """  # noqa: ignore flake8"
-
         features, token_mapping = self._get_input_ids(text)
         self.module.eval()
 
         with torch.no_grad():
             inputs = self._get_module_one_sample_inputs(features)
             scores = self.module(**inputs)[0].cpu()
+
+        scores[:, [0, -1]] -= np.inf
+        scores[:, :, [0, -1]] -= np.inf
+
+        entities = []
+        for category, start, end in zip(*np.where(scores > threshold)):
+
+            # 过滤明显预测错误的实体
+            if end - start > 40 or end - 1 >= len(token_mapping):
+                continue
+
+            # start-1与end-1是因为[CLS]在token_mapping中是不存在的，但预测时占一个位置
+            if token_mapping[start-1][0] <= token_mapping[end-1][-1]:
+                entitie_ = {
+                    "start_idx": token_mapping[start-1][0],
+                    "end_idx": token_mapping[end-1][-1],
+                    "entity": text[token_mapping[start-1][0]: token_mapping[end-1][-1]+1],
+                    "type": self.id2cat[category]
+                }
+
+                if entitie_['entity'] == '':
+                    continue
+
+                entities.append(entitie_)
+
+        return entities
+
+    def predict_one_sample_cv(
+        self,
+        text='',
+        threshold=0
+    ):
+        """
+        单样本预测
+
+        Args:
+            text (:obj:`string`): 输入文本
+            threshold (:obj:`float`, optional, defaults to 0): 预测的阈值
+        """  # noqa: ignore flake8"
+
+        features, token_mapping = self._get_input_ids(text)
+
+        with torch.no_grad():
+            inputs = self._get_module_one_sample_inputs(features)
+            scores = torch.mean(torch.stack(
+                [model(**inputs) for model in self.module]), dim=0)[0].cpu()
 
         scores[:, [0, -1]] -= np.inf
         scores[:, :, [0, -1]] -= np.inf
