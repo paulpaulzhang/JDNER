@@ -1,5 +1,6 @@
 from collections import Counter
 import gc
+from importlib.resources import path
 import math
 from ark_nlp.model.ner.global_pointer_bert import Dataset
 from ark_nlp.model.ner.global_pointer_bert import Predictor
@@ -265,34 +266,25 @@ def predict_vote(args):
     data_df = pd.DataFrame(datalist)
     data_df['label'] = data_df['label'].apply(lambda x: str(x))
 
-    kfold = KFold(n_splits=args.fold, shuffle=True, random_state=args.seed)
+    dataset = Dataset(data_df, categories=label_set)
 
-    args.checkpoint = os.path.join(args.checkpoint, args.model_type)
-    model_type = args.model_type
+    tokenizer = BertTokenizer(vocab=args.model_name_or_path,
+                              max_seq_len=args.max_seq_len)
+    config = NeZhaConfig.from_pretrained(args.model_name_or_path,
+                                         num_labels=len(dataset.cat2id))
 
-    args.save_path = os.path.join(args.save_path, model_type)
-    os.makedirs(args.save_path, exist_ok=True)
-
-    for fold, (train_idx, _) in enumerate(kfold.split(data_df)):
+    os.makedirs(os.path.join(args.save_path, args.model_type), exist_ok=True)
+    paths = [str(p) for p in list(
+        Path(args.cv_model_path).glob('**/best_model.pth'))]
+    for fold, path in enumerate(paths):
         print(f'========== {fold + 1} ==========')
-        args.model_type = f'{model_type}-{fold + 1}'
-        args.predict_model = os.path.join(
-            args.checkpoint, args.model_type, 'best_model.pth')
-
-        train_data_df = data_df.iloc[train_idx]
-        ner_train_dataset = Dataset(train_data_df, categories=label_set)
-
-        tokenizer = BertTokenizer(vocab=args.model_name_or_path,
-                                  max_seq_len=args.max_seq_len)
-        config = NeZhaConfig.from_pretrained(args.model_name_or_path,
-                                             num_labels=len(ner_train_dataset.cat2id))
         encoder = NeZhaModel(config)
         model = GlobalPointerBiLSTMModel(config, encoder)
-        model.load_state_dict(torch.load(args.predict_model), strict=False)
+        model.load_state_dict(torch.load(path), strict=False)
         model.to(torch.device(args.device))
 
         ner_predictor_instance = GlobalPointerNERPredictor(
-            model, tokenizer, ner_train_dataset.cat2id)
+            model, tokenizer, dataset.cat2id)
 
         predict_results = []
 
@@ -314,7 +306,7 @@ def predict_vote(args):
 
                 predict_results.append([_line, label])
 
-        with open(os.path.join(args.save_path, f'{model_type}-{fold + 1}.txt'), 'w', encoding='utf-8') as f:
+        with open(os.path.join(args.save_path, args.model_type, f'submit_{fold + 1}.txt'), 'w', encoding='utf-8') as f:
             for _result in predict_results:
                 for word, tag in zip(_result[0], _result[1]):
                     if word == '\n':
@@ -350,9 +342,10 @@ def distill(args):
         model.eval()
         return model
 
-    teachers = [teacher(os.path.join(args.checkpoint, args.model_type,
-                                     f'{args.model_type}-{fold + 1}', 'best_model.pth'),
-                        config, args.device) for fold in range(args.fold)]
+    paths = [str(p) for p in list(
+        Path(args.cv_model_path).glob('**/best_model.pth'))]
+
+    teachers = [teacher(path, config, args.device) for path in paths]
 
     ner_train_dataset.convert_to_ids(tokenizer)
     ner_dev_dataset.convert_to_ids(tokenizer)
@@ -474,6 +467,7 @@ if __name__ == '__main__':
     parser.add_argument('--adv_eps', type=int, default=0.001)
 
     parser.add_argument('--fold', type=int, default=5)
+    parser.add_argument('--cv_model_path', type=str, default='')
     parser.add_argument('--extend_save_path', type=str,
                         default='./extend_data/')
     parser.add_argument('--save_name', type=str, default='vote.txt')
