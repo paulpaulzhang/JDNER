@@ -79,7 +79,8 @@ class MyGlobalPointerNERTask(Task):
                 inputs = self._get_module_inputs_on_train(inputs, **kwargs)
 
                 outputs = self.module(**inputs)
-                logits, loss = self._get_train_loss(inputs, outputs, **kwargs)
+                logits, loss = self._get_train_loss(
+                    inputs, outputs, args=args, epoch=epoch, **kwargs)
 
                 # loss backword
                 loss = self._on_backward(
@@ -245,6 +246,18 @@ class MyGlobalPointerNERTask(Task):
 
         self._on_backward_record(loss, **kwargs)
 
+        return loss
+
+    def _compute_loss(self, inputs, logits, verbose=True, args=None, epoch=0, **kwargs):
+        if args is not None and args.use_rdrop and epoch > args.warmup_ratio * args.num_epochs:
+            logits2 = self.module(**inputs)
+            gp_loss = 0.5 * (self.loss_function(logits, inputs['label_ids']) +
+                             self.loss_function(logits2, inputs['label_ids']))
+            kl_loss = compute_kl_loss(logits, logits2)
+            alpha = 1
+            loss = gp_loss + alpha * kl_loss
+        else:
+            loss = self.loss_function(logits, inputs['label_ids'])
         return loss
 
     def _on_evaluate_begin_record(self, **kwargs):

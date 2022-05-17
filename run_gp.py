@@ -314,6 +314,7 @@ def predict_vote(args):
                     f.write(f'{word} {tag}\n')
                 f.write('\n')
 
+
 def predict_merge(args):
     datalist, label_set = read_data(args.data_path)
     data_df = pd.DataFrame(datalist)
@@ -503,9 +504,9 @@ if __name__ == '__main__':
     parser.add_argument('--max_seq_len', type=int, default=128)
 
     parser.add_argument('--lr', type=float, default=2e-5)
-    parser.add_argument('--lstm_lr', type=float, default=1e-2)
+    parser.add_argument('--lstm_lr', type=float, default=2e-3)
     parser.add_argument('--gp_lr', type=float, default=2e-3)
-    parser.add_argument('--weight_decay', type=float, default=1e-3)
+    parser.add_argument('--weight_decay', type=float, default=1e-4)
 
     parser.add_argument('--num_epochs', type=int, default=10)
     parser.add_argument('--batch_size', type=int, default=16)
@@ -516,6 +517,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_fgm', action='store_true', default=False)
     parser.add_argument('--use_pgd', action='store_true', default=False)
     parser.add_argument('--use_awp', action='store_true', default=False)
+    parser.add_argument('--use_rdrop', action='store_true', default=False)
     parser.add_argument('--ema_decay', type=float, default=0.999)
     parser.add_argument('--warmup_ratio', type=float, default=0.1)
 
