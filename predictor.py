@@ -112,7 +112,7 @@ class GlobalPointerNERPredictor(object):
 
         with torch.no_grad():
             inputs = self._get_module_one_sample_inputs(features)
-            scores = self.module(**inputs)[0].cpu()
+            scores = self.module(**inputs)[0][0].cpu()
 
         scores[:, [0, -1]] -= np.inf
         scores[:, :, [0, -1]] -= np.inf
@@ -158,7 +158,7 @@ class GlobalPointerNERPredictor(object):
         with torch.no_grad():
             inputs = self._get_module_one_sample_inputs(features)
             scores = torch.mean(torch.stack(
-                [model(**inputs) for model in self.module]), dim=0)[0].cpu()
+                [model(**inputs)[0] for model in self.module]), dim=0)[0].cpu()
 
         scores[:, [0, -1]] -= np.inf
         scores[:, :, [0, -1]] -= np.inf
