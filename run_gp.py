@@ -518,6 +518,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_pgd', action='store_true', default=False)
     parser.add_argument('--use_awp', action='store_true', default=False)
     parser.add_argument('--use_rdrop', action='store_true', default=False)
+    parser.add_argument('--use_simcse', action='store_true', default=False)
     parser.add_argument('--ema_decay', type=float, default=0.999)
     parser.add_argument('--warmup_ratio', type=float, default=0.1)
 

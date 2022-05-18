@@ -7,6 +7,7 @@ from ark_nlp.factory.optimizer import get_optimizer
 import torch
 from utils import get_evaluate_fpr, Logs, compute_kl_loss, AWP, FGM, PGD
 from tqdm import tqdm
+from torch.nn import functional as F
 
 
 class MyGlobalPointerNERTask(Task):
@@ -64,12 +65,12 @@ class MyGlobalPointerNERTask(Task):
             f"|{'epoch':^15}|{'loss':^15}|{'precision':^15}|{'recall':^15}|{'f1':^15}|\n")
         early_stopping = args.early_stopping
 
-        for epoch in range(1, epochs+1):
+        for epoch in range(0, epochs):
 
             self._on_epoch_begin(**kwargs)
 
             train_iterator = tqdm(
-                train_generator, desc=f'Epoch : {epoch}', total=len(train_generator))
+                train_generator, desc=f'Epoch : {epoch + 1}', total=len(train_generator))
 
             for step, inputs in enumerate(train_iterator):
 
@@ -84,12 +85,12 @@ class MyGlobalPointerNERTask(Task):
 
                 # loss backword
                 loss = self._on_backward(
-                    inputs, outputs, logits, loss, args=args, epoch=epoch, **kwargs)
+                    inputs, outputs, outputs[0], loss, args=args, epoch=epoch, **kwargs)
 
                 if (step + 1) % gradient_accumulation_steps == 0 or (step + 1) == len(train_iterator):
 
                     # optimize
-                    self._on_optimize(inputs, outputs, logits,
+                    self._on_optimize(inputs, outputs, outputs[0],
                                       loss, grad_clip=10, **kwargs)
                     train_iterator.set_postfix_str(
                         f"training loss: {(self.logs['epoch_loss'] / self.logs['epoch_step']):.4f}")
@@ -104,7 +105,7 @@ class MyGlobalPointerNERTask(Task):
                 self.evaluate(validation_data, ckpt=ckpt, ** kwargs)
 
                 content = "|{:^15}|{:^15}|{:^15}|{:^15}|{:^15}|\n".format(
-                    epoch,
+                    epoch + 1,
                     round(self.evaluate_logs['eval_loss'] /
                           self.evaluate_logs['eval_step'], 5),
                     round(self.evaluate_logs['precision'], 5), round(
@@ -215,14 +216,14 @@ class MyGlobalPointerNERTask(Task):
 
         loss.backward()
 
-        if args.use_fgm and epoch > args.warmup_ratio * args.num_epochs:
+        if args.use_fgm and epoch >= args.warmup_ratio * args.num_epochs:
             self.fgm.attack(epsilon=args.epsilon, emb_name=args.emb_name)
             logits = self.module(**inputs)
             _, attck_loss = self._get_train_loss(inputs, logits, **kwargs)
             attck_loss.backward()
             self.fgm.restore()
 
-        if args.use_pgd and epoch > args.warmup_ratio * args.num_epochs:
+        if args.use_pgd and epoch >= args.warmup_ratio * args.num_epochs:
             self.pgd.backup_grad()
             for t in range(args.adv_k):
                 self.pgd.attack(is_first_attack=(t == 0))
@@ -235,7 +236,7 @@ class MyGlobalPointerNERTask(Task):
                 attck_loss.backward()
             self.pgd.restore()
 
-        if args.use_awp and epoch > args.warmup_ratio * args.num_epochs:
+        if args.use_awp and epoch >= args.warmup_ratio * args.num_epochs:
             self.awp.save()
             for i in range(self.awp.adv_step):
                 self.awp.attack_step()
@@ -248,14 +249,68 @@ class MyGlobalPointerNERTask(Task):
 
         return loss
 
-    def _compute_loss(self, inputs, logits, verbose=True, args=None, epoch=0, **kwargs):
-        if args is not None and args.use_rdrop and epoch > args.warmup_ratio * args.num_epochs:
-            logits2 = self.module(**inputs)
-            gp_loss = 0.5 * (self.loss_function(logits, inputs['label_ids']) +
-                             self.loss_function(logits2, inputs['label_ids']))
+    def _get_train_loss(
+        self,
+        inputs,
+        outputs,
+        **kwargs
+    ):
+
+        if type(outputs) == tuple:
+            logits, cls_output = outputs
+        else:
+            logits = outputs
+            # 计算损失
+        loss = self._compute_loss(inputs, outputs, **kwargs)
+
+        self._compute_loss_record(**kwargs)
+
+        return logits, loss
+
+    def _get_evaluate_loss(
+        self,
+        inputs,
+        outputs,
+        verbose=True,
+        **kwargs
+    ):
+
+        if type(outputs) == tuple:
+            logits, cls_output = outputs
+        else:
+            logits = outputs
+            # 计算损失
+        loss = self._compute_loss(inputs, outputs, **kwargs)
+
+        return logits, loss
+
+    def _compute_loss(self, inputs, outputs, verbose=True, args=None, epoch=0, **kwargs):
+        if type(outputs) == tuple:
+            logits, cls_output = outputs
+        else:
+            logits = outputs
+
+        if args is not None and args.use_rdrop and epoch >= args.warmup_ratio * args.num_epochs:
+            logits2, *_ = self.module(**inputs)
+            gpce = 0.5 * (self.loss_function(logits, inputs['label_ids']) +
+                          self.loss_function(logits2, inputs['label_ids']))
             kl_loss = compute_kl_loss(logits, logits2)
-            alpha = 1
-            loss = gp_loss + alpha * kl_loss
+            alpha = 5
+            loss = gpce + alpha * kl_loss
+        elif args is not None and args.use_simcse and epoch < args.warmup_ratio * args.num_epochs:
+            idxs = torch.arange(0, cls_output.shape[0], device=args.device)
+            y_true = idxs + 1 - idxs % 2 * 2
+            similarities = F.cosine_similarity(
+                cls_output.unsqueeze(1), cls_output.unsqueeze(0), dim=2)
+            # torch自带的快速计算相似度矩阵的方法
+            similarities = similarities - \
+                torch.eye(cls_output.shape[0], device=args.device) * 1e12
+            # 论文中除以 temperature 超参 0.05
+            # similarities = similarities * 20
+            simcse_loss = torch.mean(F.cross_entropy(similarities, y_true))
+            gpce = self.loss_function(logits, inputs['label_ids'])
+            beta = 1
+            loss = gpce + beta * simcse_loss
         else:
             loss = self.loss_function(logits, inputs['label_ids'])
         return loss
