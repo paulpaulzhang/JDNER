@@ -90,13 +90,12 @@ class GlobalPointerBiLSTMModel(nn.Module):
         )
 
         sequence_output = outputs[0]
-        cls_output = outputs[1]
 
         output, (h_n, c_n) = self.bilstm(sequence_output)
 
         logits = self.global_pointer(output, mask=attention_mask)
 
-        return (logits, cls_output)
+        return logits
 
 
 class EfficientGlobalPointerModel(nn.Module):

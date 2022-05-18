@@ -7,7 +7,6 @@ from ark_nlp.factory.optimizer import get_optimizer
 import torch
 from utils import get_evaluate_fpr, Logs, compute_kl_loss, AWP, FGM, PGD
 from tqdm import tqdm
-from torch.nn import functional as F
 
 
 class MyGlobalPointerNERTask(Task):
@@ -80,17 +79,16 @@ class MyGlobalPointerNERTask(Task):
                 inputs = self._get_module_inputs_on_train(inputs, **kwargs)
 
                 outputs = self.module(**inputs)
-                logits, loss = self._get_train_loss(
-                    inputs, outputs, args=args, epoch=epoch, **kwargs)
+                logits, loss = self._get_train_loss(inputs, outputs, **kwargs)
 
                 # loss backword
                 loss = self._on_backward(
-                    inputs, outputs, outputs[0], loss, args=args, epoch=epoch, **kwargs)
+                    inputs, outputs, logits, loss, args=args, epoch=epoch, **kwargs)
 
                 if (step + 1) % gradient_accumulation_steps == 0 or (step + 1) == len(train_iterator):
 
                     # optimize
-                    self._on_optimize(inputs, outputs, outputs[0],
+                    self._on_optimize(inputs, outputs, logits,
                                       loss, grad_clip=10, **kwargs)
                     train_iterator.set_postfix_str(
                         f"training loss: {(self.logs['epoch_loss'] / self.logs['epoch_step']):.4f}")
@@ -247,72 +245,6 @@ class MyGlobalPointerNERTask(Task):
 
         self._on_backward_record(loss, **kwargs)
 
-        return loss
-
-    def _get_train_loss(
-        self,
-        inputs,
-        outputs,
-        **kwargs
-    ):
-
-        if type(outputs) == tuple:
-            logits, cls_output = outputs
-        else:
-            logits = outputs
-            # 计算损失
-        loss = self._compute_loss(inputs, outputs, **kwargs)
-
-        self._compute_loss_record(**kwargs)
-
-        return logits, loss
-
-    def _get_evaluate_loss(
-        self,
-        inputs,
-        outputs,
-        verbose=True,
-        **kwargs
-    ):
-
-        if type(outputs) == tuple:
-            logits, cls_output = outputs
-        else:
-            logits = outputs
-            # 计算损失
-        loss = self._compute_loss(inputs, outputs, **kwargs)
-
-        return logits, loss
-
-    def _compute_loss(self, inputs, outputs, verbose=True, args=None, epoch=0, **kwargs):
-        if type(outputs) == tuple:
-            logits, cls_output = outputs
-        else:
-            logits = outputs
-
-        if args is not None and args.use_rdrop and epoch >= args.warmup_ratio * args.num_epochs:
-            logits2, *_ = self.module(**inputs)
-            gpce = 0.5 * (self.loss_function(logits, inputs['label_ids']) +
-                          self.loss_function(logits2, inputs['label_ids']))
-            kl_loss = compute_kl_loss(logits, logits2)
-            alpha = 5
-            loss = gpce + alpha * kl_loss
-        elif args is not None and args.use_simcse and epoch < args.warmup_ratio * args.num_epochs:
-            idxs = torch.arange(0, cls_output.shape[0], device=args.device)
-            y_true = idxs + 1 - idxs % 2 * 2
-            similarities = F.cosine_similarity(
-                cls_output.unsqueeze(1), cls_output.unsqueeze(0), dim=2)
-            # torch自带的快速计算相似度矩阵的方法
-            similarities = similarities - \
-                torch.eye(cls_output.shape[0], device=args.device) * 1e12
-            # 论文中除以 temperature 超参 0.05
-            # similarities = similarities * 20
-            simcse_loss = torch.mean(F.cross_entropy(similarities, y_true))
-            gpce = self.loss_function(logits, inputs['label_ids'])
-            beta = 1
-            loss = gpce + beta * simcse_loss
-        else:
-            loss = self.loss_function(logits, inputs['label_ids'])
         return loss
 
     def _on_evaluate_begin_record(self, **kwargs):
