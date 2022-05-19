@@ -1,6 +1,5 @@
 from collections import Counter
 import gc
-from importlib.resources import path
 import math
 from ark_nlp.model.ner.global_pointer_bert import Dataset
 from ark_nlp.model.ner.global_pointer_bert import Predictor
